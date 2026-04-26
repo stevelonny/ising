@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cmath>
 #include <random>
+#include <fstream>
 
 using namespace std;
 
@@ -42,34 +43,6 @@ int getNeighboursSum(int* opponent, int index, int size, int subSize){
 
 }
 
-int getWhiteNeighboursSum(int* blacks, int index, int size, int subSize){
-    int row = index / subSize;
-    int col = index % subSize;
-    int fullJ = 2*col + (row%2);
-
-    int sum{0};
-    if (row > 0)        sum += blacks[getBlackIndex(row - 1, fullJ, subSize)];
-    if (row < size-1)   sum += blacks[getBlackIndex(row + 1, fullJ, subSize)];
-    if (fullJ > 0)      sum += blacks[getBlackIndex(row, fullJ - 1, subSize)];
-    if (fullJ < size-1) sum += blacks[getBlackIndex(row, fullJ + 1, subSize)];
-
-    return sum;
-}
-
-int getBlackNeighboursSum(int* whites, int index, int size, int subSize){
-    int row = index / subSize;
-    int col = index % subSize;
-    int fullJ = 2*col + ((row + 1) % 2);
-
-    int sum{0};
-    if (row > 0)        sum += whites[getWhiteIndex(row - 1, fullJ, subSize)];
-    if (row < size-1)   sum += whites[getWhiteIndex(row + 1, fullJ, subSize)];
-    if (fullJ > 0)      sum += whites[getWhiteIndex(row, fullJ - 1, subSize)];
-    if (fullJ < size-1) sum += whites[getWhiteIndex(row, fullJ + 1, subSize)];
-
-    return sum;
-}
-
 double uniform01(std::mt19937& gen){
     static std::uniform_real_distribution<double> dist(0.0, 1.0);
     return dist(gen);
@@ -90,36 +63,6 @@ int updateSubLattice(int* subLattice, int* opponent, int size, int subSize, doub
     return flips;
 }
 
-int updateWhitesubLattice(int* whites, int* blacks, int size, int subSize, double temp, std::mt19937& gen){
-    int subLen = size*subSize;
-    int flips{0};
-    // double for cycle for odd/even row?
-    for(int i{0}; i < subLen; i++){
-        int nearSum = getNeighboursSum(blacks, i, size, subSize);
-        double deltaE = 2.*whites[i] * nearSum;
-        if(deltaE < 0 || uniform01(gen) < exp(-deltaE / temp)){
-            whites[i] *= -1;
-            flips++;
-        }
-    }
-    return flips;
-}
-
-int updateBlacksubLattice(int* blacks, int* whites, int size, int subSize, double temp, std::mt19937& gen){
-    int subLen = size*subSize;
-    int flips{0};
-    // double for cycle for odd/even row?
-    for(int i{0}; i < subLen; i++){
-        int nearSum = getNeighboursSum(whites, i, size, subSize);
-        double deltaE = 2.*blacks[i] * nearSum;
-        if(deltaE < 0 || uniform01(gen) < exp(-deltaE / temp)){
-            blacks[i] *= -1;
-            flips++;
-        }
-    }
-    return flips;
-}
-
 void printLattice(int* whites, int* blacks, int size, int subSize){
     for (int i = 0; i < size; i++){
         for (int j = 0; j < size; j++){
@@ -133,40 +76,77 @@ void printLattice(int* whites, int* blacks, int size, int subSize){
     }
 }
 
-int main(){
+int* initSubLattice(int subLen, std::mt19937& gen){
+    int* subLattice = new int[subLen];
+    std::bernoulli_distribution dist(0.5);
+    for (int i = 0; i < subLen; i++) {
+        subLattice[i] = dist(gen) ? 1 : -1;
+    }
+    return subLattice;
+}
 
-    // arrays for storing white and black sublattices
-    int* whites;
-    int* blacks;
+int getMagnetization(int* blacks, int* whites, int subLen){
+    int mag = 0;
+    for(int i = 0; i < subLen; i++){
+        mag += blacks[i];
+        mag += whites[i];
+    }
+    return mag;
+}
 
-    int size{8}; //size of the total lattice
-    int subSize{size/2}; //numbers of columns for each sublattice
-    int subLen{size*subSize}; //length of each sublattice array (total number of elements)
+int main(int argc, char* argv[]){
 
-    int sweeps{100};
-    double temp{1.0};
+    if(argc != 4){
+        cerr << "Usage: " << argv[0] << " <grid_size> <temperature> <sweeps>" << endl;
+        return -1;
+    }
+    int size = stoi(argv[1]);
+    if (size % 2 != 0 || size <= 0) {
+        cerr << "Grid size must be a positive even integer." << endl;
+        return -1;
+    }
+    double temp = stod(argv[2]);
+    if (temp <= 0.0) {
+        cerr << "Temperature must be positive." << endl;
+        return -1;
+    }
+    int sweeps = stoi(argv[3]);
+    if (sweeps <= 0) {
+        cerr << "Number of sweeps must be positive." << endl;
+        return -1;
+    }
+
+    int subSize = size/2; //numbers of columns for each sublattice
+    int subLen = size*subSize; //length of each sublattice array (total number of elements)
 
     //prepare spin lattice
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::bernoulli_distribution dist(0.5);
 
-    whites = new int[subLen];
-    blacks = new int[subLen];
-    for (int i = 0; i < subLen; i++) {
-        //whites[i] = 1;
-        //blacks[i] = -1;
-        whites[i] = dist(gen) ? 1 : -1;
-        blacks[i] = dist(gen) ? 1 : -1;
+    // arrays for storing white and black sublattices
+    int* whites = initSubLattice(subLen, gen);
+    int* blacks = initSubLattice(subLen, gen);
+
+    ofstream outFile("magnetization.txt");
+    if (!outFile) {
+        cerr << "Error opening output file." << endl;
+        return -1;
     }
+    outFile << "Sweeps" << "\t" << "Mag" << "\t" << "Temp" << "\t" << "W_flips" << "\t" << "B_flips" << endl;
+  
 
     //printLattice(whites, blacks, size, subSize);
     for(int s{0}; s < sweeps; s++){
         int whiteFlips = updateSubLattice(whites, blacks, size, subSize, temp, gen);
         int blackFlips = updateSubLattice(blacks, whites, size, subSize, temp, gen);
-        cout << "sweep " << s << ": white=" << whiteFlips << " black=" << blackFlips << endl;
+        int magnetization = getMagnetization(blacks, whites, subLen);
+        outFile << s << "\t" << magnetization << "\t" << temp << "\t" << whiteFlips << "\t" << blackFlips << endl;
     }
 
-    printLattice(whites, blacks, size, subSize);
+    //printLattice(whites, blacks, size, subSize);
 
+    delete[] whites;
+    delete[] blacks;
+
+    return 0;
 }
