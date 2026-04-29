@@ -15,10 +15,11 @@ int inline getWhiteIndex(int i, int j, int subSize){
 }
 
 //maybe better to have separate func for even and odd rows
-int getNeighboursSum(int* opponent, int index, int size, int subSize){
+int getNeighboursSum(int* opponent, int index, int size, int subSize, bool isWhite){
     int row = index / subSize;
     int col = index % subSize;
     bool rowParity = (row % 2 == 0);
+    if(isWhite) rowParity = !rowParity; //white and black sublattice have opposite parity
     /* nn indices */
     int up      = index - subSize;
     int down    = index + subSize;
@@ -48,14 +49,14 @@ double uniform01(std::mt19937& gen){
     return dist(gen);
 }
 
-int updateSubLattice(int* subLattice, int* opponent, int size, int subSize, double temp, std::mt19937& gen){
+int updateSubLattice(int* subLattice, int* opponent, int size, int subSize, double temp, bool isWhite, std::mt19937& gen){
     int subLen = size*subSize;
     int flips{0};
     // double for cycle for odd/even row?
     for(int i{0}; i < subLen; i++){
-        int nearSum = getNeighboursSum(opponent, i, size, subSize);
+        int nearSum = getNeighboursSum(opponent, i, size, subSize, isWhite);
         double deltaE = 2.*subLattice[i] * nearSum;
-        if(deltaE < 0 || uniform01(gen) < exp(-deltaE / temp)){
+        if(uniform01(gen) < exp(-deltaE / temp)){
             subLattice[i] *= -1;
             flips++;
         }
@@ -85,68 +86,10 @@ int* initSubLattice(int subLen, std::mt19937& gen){
     return subLattice;
 }
 
-int getMagnetization(int* blacks, int* whites, int subLen){
+int getMagnetization(int* subLattice, int subLen){
     int mag = 0;
     for(int i = 0; i < subLen; i++){
-        mag += blacks[i];
-        mag += whites[i];
+        mag += subLattice[i];
     }
     return mag;
-}
-
-int main(int argc, char* argv[]){
-
-    if(argc != 4){
-        cerr << "Usage: " << argv[0] << " <grid_size> <temperature> <sweeps>" << endl;
-        return -1;
-    }
-    int size = stoi(argv[1]);
-    if (size % 2 != 0 || size <= 0) {
-        cerr << "Grid size must be a positive even integer." << endl;
-        return -1;
-    }
-    double temp = stod(argv[2]);
-    if (temp <= 0.0) {
-        cerr << "Temperature must be positive." << endl;
-        return -1;
-    }
-    int sweeps = stoi(argv[3]);
-    if (sweeps <= 0) {
-        cerr << "Number of sweeps must be positive." << endl;
-        return -1;
-    }
-
-    int subSize = size/2; //numbers of columns for each sublattice
-    int subLen = size*subSize; //length of each sublattice array (total number of elements)
-
-    //prepare spin lattice
-    std::random_device rd;
-    std::mt19937 gen(rd());
-
-    // arrays for storing white and black sublattices
-    int* whites = initSubLattice(subLen, gen);
-    int* blacks = initSubLattice(subLen, gen);
-
-    ofstream outFile("magnetization.txt");
-    if (!outFile) {
-        cerr << "Error opening output file." << endl;
-        return -1;
-    }
-    outFile << "Sweeps" << "\t" << "Mag" << "\t" << "Temp" << "\t" << "W_flips" << "\t" << "B_flips" << endl;
-  
-
-    //printLattice(whites, blacks, size, subSize);
-    for(int s{0}; s < sweeps; s++){
-        int whiteFlips = updateSubLattice(whites, blacks, size, subSize, temp, gen);
-        int blackFlips = updateSubLattice(blacks, whites, size, subSize, temp, gen);
-        int magnetization = getMagnetization(blacks, whites, subLen);
-        outFile << s << "\t" << magnetization << "\t" << temp << "\t" << whiteFlips << "\t" << blackFlips << endl;
-    }
-
-    //printLattice(whites, blacks, size, subSize);
-
-    delete[] whites;
-    delete[] blacks;
-
-    return 0;
 }
