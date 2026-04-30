@@ -24,20 +24,14 @@ __device__ int getNeighbourSum_obc(int* opponent, int index, int size, int subSi
     /* nn indices */
     int up      = index - subSize;
     int down    = index + subSize;
-    // left and right index switch places for each change of row's parity ("adjacent")
+    //left and right index switch places for each change of row's parity
 
     int sum{0};
-    
-    if (up >= 0)            sum += opponent[up];
-    if (down < size*size/2) sum += opponent[down];
-    if (rowParity){ //even row
-        sum += opponent[index];                     //right
-        if(col > 0) sum += opponent[index - 1];     //left
-    }
-    else{ //odd row
-        sum += opponent[index];                             //left
-        if(col < subSize - 1) sum += opponent[index + 1];   //right
-    }
+    //behold the horror of ternary operators, which however lead to branchless code and avoids warp divergence
+    sum += (up >= 0) ? opponent[up] : 0;
+    sum += (down < size*size/2) ? opponent[down] : 0;
+    sum += opponent[index];
+    sum += rowParity ? ((col > 0) ? opponent[index - 1] : 0) : ((col < subSize - 1) ? opponent[index + 1] : 0);
 
     return sum;
 }
