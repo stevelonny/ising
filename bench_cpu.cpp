@@ -44,7 +44,7 @@ int main(int argc, char** argv){
     int* blacks = initSubLattice(subLen, gen);
 
     auto end_init = std::chrono::high_resolution_clock::now();
-    auto duration_init = std::chrono::duration_cast<std::chrono::milliseconds>(end_init - start_init);
+    auto duration_init = std::chrono::duration_cast<std::chrono::microseconds>(end_init - start_init);
 
     //run with timing
     auto start = std::chrono::high_resolution_clock::now();
@@ -55,7 +55,7 @@ int main(int argc, char** argv){
     }
     
     auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     
     ofstream outFile("results.txt", ios::app);
     outFile << size << "\t" << temp << "\t" << nsweeps << "\t" << duration_init.count() << "\t" << duration.count() << endl;

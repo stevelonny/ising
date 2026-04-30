@@ -1,4 +1,4 @@
 *.x
-.txt
+*.txt
 old/
 .conda/

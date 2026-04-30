@@ -60,7 +60,7 @@ int main(int argc, char** argv){
     cudaDeviceSynchronize();
 
     auto end_init = std::chrono::high_resolution_clock::now();
-    auto duration_init = std::chrono::duration_cast<std::chrono::milliseconds>(end_init - start_init);
+    auto duration_init = std::chrono::duration_cast<std::chrono::microseconds>(end_init - start_init);
 
     //run simulation
     auto start = std::chrono::high_resolution_clock::now();
@@ -75,9 +75,9 @@ int main(int argc, char** argv){
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     
-    //ofstream outFile("results_gpu.txt", ios::app);
-    //outFile << size << "\t" << temp << "\t" << nsweeps << "\t" << duration_init.count() << "\t" << duration.count() << endl;
-    //outFile.close();
+    ofstream outFile("results_gpu.txt", ios::app);
+    outFile << size << "\t" << temp << "\t" << nsweeps << "\t" << duration_init.count() << "\t" << duration.count() << endl;
+    outFile.close();
 
     cout << "Size" << "\t" << "temp" << "\t" << "nsweeps" << "\t" << "Init" << "\t" << "Sim" << endl;
     cout << size << "\t" << temp << "\t" << nsweeps << "\t" << duration_init.count() << "\t" << duration.count() << endl;
