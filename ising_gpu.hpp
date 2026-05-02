@@ -58,6 +58,20 @@ __global__ void reduceMagnetizationKernel(const int* sublattice, int sublen, int
     atomicAdd(out, partial);
 }
 
+__global__ void reduceMagnetizationKernel(const int* whites, const int* blacks, int sublen, int* out){
+    int id = threadIdx.x + blockIdx.x * blockDim.x;
+    int stride = blockDim.x * gridDim.x;
+
+    int partial = 0;
+    for (int i = id; i < sublen; i += stride) {
+        partial += whites[i];
+        partial += blacks[i];
+    }
+
+    atomicAdd(out, partial);
+}
+
+
 /* void blockSweepKernel(int blockSweeps, int n_block, int* whites, int* blacks, int size, int subSize, double temp, int* whiteMag, int* blackMag, int* d_whiteMagTmp, int* d_blackMagTmp, curandState *state){
     int blocks = NBLOCKS;
     int threads = NTHREADS;
