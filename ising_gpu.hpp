@@ -4,6 +4,12 @@
 
 using namespace std;
 
+enum BoundaryCondition{
+    Open,
+    Periodic
+    //Fixed
+};
+
 struct DataBlock{
     int* whites;
     int* blacks;
@@ -27,7 +33,8 @@ __global__ void initSublatticeKernel(int* subLattice, int sublen, curandState *s
     subLattice[id] = (r < 0.5f) ? -1 : 1;
 }
 
-__device__ int getNeighbourSum_obc(int* opponent, int index, int size, int subSize, bool isWhite){
+template<BoundaryCondition BC>
+__device__ inline int getNeighbourSum(int* opponent, int index, int size, int subSize, bool isWhite){
     int row = index / subSize;
     int col = index % subSize;
     bool rowParity = (row % 2 == 0);
@@ -38,19 +45,38 @@ __device__ int getNeighbourSum_obc(int* opponent, int index, int size, int subSi
     //left and right index switch places for each change of row's parity
 
     int sum{0};
-    //behold the horror of ternary operators, which however lead to branchless code and avoids warp divergence
-    sum += (up >= 0) ? opponent[up] : 0;
-    sum += (down < size*size/2) ? opponent[down] : 0;
-    sum += opponent[index];
-    sum += rowParity ? ((col > 0) ? opponent[index - 1] : 0) : ((col < subSize - 1) ? opponent[index + 1] : 0);
-
+    if(BC == Open){
+        //behold the horror of ternary operators, which however lead to branchless code and avoids warp divergence
+        sum += (up >= 0) ? opponent[up] : 0;
+        sum += (down < size*subSize) ? opponent[down] : 0;
+        sum += opponent[index];
+        sum += rowParity ?
+               ((col > 0) ? opponent[index - 1] : 0) :
+               ((col < subSize - 1) ? opponent[index + 1] : 0);
+    }
+    else if(BC == Periodic){
+        // Vertical periodicity with bitwise AND (assumes power of 2)
+        int subLen = size * subSize;
+        //int up_wrapped = (index - subSize + subLen) & (subLen - 1);
+        //int down_wrapped = (index + subSize) & (subLen - 1);
+        
+        sum += opponent[(index - subSize + subLen) & (subLen - 1)];
+        sum += opponent[(index + subSize) & (subLen - 1)];
+        sum += opponent[index];
+        //horizontal neighbour
+        int col_left = (col - 1 + subSize) & (subSize - 1);
+        int col_right = (col + 1) & (subSize - 1);
+        int neighbor_col = rowParity ? col_left : col_right;
+        sum += opponent[row * subSize + neighbor_col];
+    }
     return sum;
 }
 
+template<BoundaryCondition BC>
 __global__ void updateSublatticeKernel(int* subLattice, int* opponent, bool isWhite, int size, int subSize, double temp, curandState *state){
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     if(id >= size * subSize / 2) return;
-    int nearSum = getNeighbourSum_obc(opponent, id, size, subSize, isWhite);
+    int nearSum = getNeighbourSum<BC>(opponent, id, size, subSize, isWhite);
     double deltaE = 2.*(double)subLattice[id] * (double)nearSum;
     float r = curand_uniform(&state[id]);
     if(r < exp(-deltaE / temp)){
@@ -83,7 +109,7 @@ __global__ void reduceMagnetizationKernel(const int* whites, const int* blacks, 
 }
 
 
-void blockSweepKernel(DataBlock* d, int blockSweeps, int n_blocks, int n_threads){
+/* void blockSweepKernel(DataBlock* d, int blockSweeps, int n_blocks, int n_threads){
     for(int s = 0; s < blockSweeps; s++){
         updateSublatticeKernel<<<n_blocks, n_threads>>>(
             d->whites, d->blacks, true, d->size, d->subSize, d->temp, d->state);
@@ -92,7 +118,7 @@ void blockSweepKernel(DataBlock* d, int blockSweeps, int n_blocks, int n_threads
         reduceMagnetizationKernel<<<n_blocks, n_threads>>>(
             d->whites, d->blacks, d->subLen, &d->magnetization[s]);
     }
-}
+} */
 
 int* initSubLattice(int subLen, std::mt19937& gen){
     int* subLattice = new int[subLen];

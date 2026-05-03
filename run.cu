@@ -106,8 +106,8 @@ int main(int argc, char** argv){
         T_current = T_start - (T_start - temp) * ((double)sweep / (double)(anneal_sweeps - 1));
         
         //perform mc sweep
-        updateSublatticeKernel<<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, T_current, d_state);
-        updateSublatticeKernel<<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, T_current, d_state);
+        updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, T_current, d_state);
+        updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, T_current, d_state);
         //compute magnetization
         index = sweep%window_size;
         cudaMemset(&d_magnetization[index], 0, sizeof(int));
@@ -131,8 +131,8 @@ int main(int argc, char** argv){
     cout << "Thermalization phase" << endl;
     while(!is_thermalized && sweep < MAX_SWEEPS){
         //perform mc sweep
-        updateSublatticeKernel<<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, temp, d_state);
-        updateSublatticeKernel<<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, temp, d_state);
+        updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, temp, d_state);
+        updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, temp, d_state);
         //compute magnetization
         index = sweep%window_size;
         cudaMemset(&d_magnetization[index], 0, sizeof(int));
@@ -189,9 +189,9 @@ int main(int argc, char** argv){
     for(int b{0}; b<nblocksweeps; b++){
         //single block sweep
         for(int s = 0; s < blocksize; s++){
-            updateSublatticeKernel<<<nblocks, nthreads>>>(
+            updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(
                 d.whites, d.blacks, true, d.size, d.subSize, d.temp, d.state);
-            updateSublatticeKernel<<<nblocks, nthreads>>>(
+            updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(
                 d.blacks, d.whites, false, d.size, d.subSize, d.temp, d.state);
             reduceMagnetizationKernel<<<nblocks, nthreads>>>(
                 d.whites, d.blacks, d.subLen, &d.magnetization[s]);
