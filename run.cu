@@ -37,31 +37,33 @@ double compute_var(int* data, int n, double mean){
 int main(int argc, char** argv){
 
     if(argc != 5){ 
-        cerr << "Usage: " << argv[0] << " <grid_size> <temperature> <nblocksweeps> <blocksize>" << endl;
+        cerr << "Usage: " << argv[0] << " <power of 2 for grid_size> <temperature> <nblocksweeps> <blocksize>" << endl;
         return -1;
     }
-    int size = stoi(argv[1]);
-    if (size % 2 != 0 || size <= 0) {
-        cerr << "Grid size must be a positive even integer." << endl;
+    int power2 = stoi(argv[1]);
+    if(power2 <= 0){
+        cerr << "Power of 2 for grid size must be a positive integer." << endl;
         return -1;
     }
     double temp = stod(argv[2]);
-    if (temp <= 0.0) {
+    if(temp <= 0.0){
         cerr << "Temperature must be positive." << endl;
         return -1;
     }
     int nblocksweeps = stoi(argv[3]);
-    if (nblocksweeps <= 0) {
+    if(nblocksweeps <= 0){
         cerr << "Number of blocksweeps must be positive." << endl;
         return -1;
     }
     int blocksize = stoi(argv[4]);
-    if (blocksize <= 0) {
+    if(blocksize <= 0){
         cerr << "Block size must be positive." << endl;
         return -1;
     }
-
+    
     /* setup */
+    int size = 1 << power2; // grid size is 2^power2
+    cout << "Grid size: " << size << "x" << size << endl;
     int subSize = size/2; //numbers of columns for each sublattice
     int subLen = size*subSize; //length of each sublattice array (total number of elements)
     //determine grid and block dimensions
