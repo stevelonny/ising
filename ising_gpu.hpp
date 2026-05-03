@@ -4,6 +4,17 @@
 
 using namespace std;
 
+struct DataBlock{
+    int* whites;
+    int* blacks;
+    int size;
+    int subLen;
+    int subSize;
+    double temp;
+    curandState *state;
+    int* magnetization;
+};
+
 __global__ void initCurand(curandState *state, unsigned long seed){
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     curand_init(seed, id, 0, &state[id]);
@@ -72,23 +83,16 @@ __global__ void reduceMagnetizationKernel(const int* whites, const int* blacks, 
 }
 
 
-/* void blockSweepKernel(int blockSweeps, int n_block, int* whites, int* blacks, int size, int subSize, double temp, int* whiteMag, int* blackMag, int* d_whiteMagTmp, int* d_blackMagTmp, curandState *state){
-    int blocks = NBLOCKS;
-    int threads = NTHREADS;
-
+void blockSweepKernel(DataBlock* d, int blockSweeps, int n_blocks, int n_threads){
     for(int s = 0; s < blockSweeps; s++){
-        updateSublatticeKernel<<<blocks, threads>>>(whites, blacks, true, size, subSize, temp, state);
-        updateSublatticeKernel<<<blocks, threads>>>(blacks, whites, false, size, subSize, temp, state);
+        updateSublatticeKernel<<<n_blocks, n_threads>>>(
+            d->whites, d->blacks, true, d->size, d->subSize, d->temp, d->state);
+        updateSublatticeKernel<<<n_blocks, n_threads>>>(
+            d->blacks, d->whites, false, d->size, d->subSize, d->temp, d->state);
+        reduceMagnetizationKernel<<<n_blocks, n_threads>>>(
+            d->whites, d->blacks, d->subLen, &d->magnetization[s]);
     }
-
-    cudaMemset(d_whiteMagTmp, 0, sizeof(int));
-    cudaMemset(d_blackMagTmp, 0, sizeof(int));
-    reduceMagnetizationKernel<<<blocks, threads>>>(whites, subSize * size, d_whiteMagTmp);
-    reduceMagnetizationKernel<<<blocks, threads>>>(blacks, subSize * size, d_blackMagTmp);
-
-    cudaMemcpy(&whiteMag[n_block], d_whiteMagTmp, sizeof(int), cudaMemcpyDeviceToHost);
-    cudaMemcpy(&blackMag[n_block], d_blackMagTmp, sizeof(int), cudaMemcpyDeviceToHost);
-} */
+}
 
 int* initSubLattice(int subLen, std::mt19937& gen){
     int* subLattice = new int[subLen];
