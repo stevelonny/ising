@@ -75,9 +75,9 @@ __device__ inline int getNeighbourSum(int* opponent, int index, int size, int su
 template<BoundaryCondition BC>
 __global__ void updateSublatticeKernel(int* subLattice, int* opponent, bool isWhite, int size, int subSize, double temp, curandState *state){
     int id = threadIdx.x + blockIdx.x * blockDim.x;
-    if(id >= size * subSize / 2) return;
+    if(id >= size * subSize) return;
     int nearSum = getNeighbourSum<BC>(opponent, id, size, subSize, isWhite);
-    double deltaE = 2.*(double)subLattice[id] * (double)nearSum;
+    float deltaE = 2.*(float)subLattice[id] * (float)nearSum;
     float r = curand_uniform(&state[id]);
     if(r < exp(-deltaE / temp)){
         subLattice[id] *= -1;

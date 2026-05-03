@@ -98,7 +98,7 @@ int main(int argc, char** argv){
     int* magnetization = new int[window_size];
 
     //temperature annealing schedule: cool from high T to target over 1000 sweeps
-    int anneal_sweeps = 5000;
+    int anneal_sweeps = 1000;
     double T_start{5.0};
     double T_current{5.0};
     std::cout << "Annealing phase (annealing T: " << T_start << " -> " << temp << ")" << endl;
