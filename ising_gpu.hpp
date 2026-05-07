@@ -17,16 +17,16 @@ struct DataBlock{
     int subLen;
     int subSize;
     double temp;
-    curandState *state;
+    curandStatePhilox4_32_10_t *state;
     int* magnetization;
 };
 
-__global__ void initCurand(curandState *state, unsigned long seed){
+__global__ void initCurand(curandStatePhilox4_32_10_t *state, unsigned long seed){
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     curand_init(seed, id, 0, &state[id]);
 }
 
-__global__ void initSublatticeKernel(int* subLattice, int sublen, curandState *state){
+__global__ void initSublatticeKernel(int* subLattice, int sublen, curandStatePhilox4_32_10_t *state){
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     if(id >= sublen) return;
     float r = curand_uniform(&state[id]);
@@ -73,7 +73,7 @@ __device__ inline int getNeighbourSum(int* opponent, int index, int size, int su
 }
 
 template<BoundaryCondition BC>
-__global__ void updateSublatticeKernel(int* subLattice, int* opponent, bool isWhite, int size, int subSize, double temp, curandState *state){
+__global__ void updateSublatticeKernel(int* subLattice, int* opponent, bool isWhite, int size, int subSize, double temp, curandStatePhilox4_32_10_t *state){
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     if(id >= size * subSize) return;
     int nearSum = getNeighbourSum<BC>(opponent, id, size, subSize, isWhite);

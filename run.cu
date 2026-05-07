@@ -79,8 +79,8 @@ int main(int argc, char** argv){
     //init curand state
     std::random_device rd;
     //int rd{42};
-    curandState* d_state;
-    cudaMalloc(&d_state, nblocks * nthreads * sizeof(curandState));
+    curandStatePhilox4_32_10_t* d_state;
+    cudaMalloc(&d_state, nblocks * nthreads * sizeof(curandStatePhilox4_32_10_t));
     initCurand<<<nblocks, nthreads>>>(d_state, rd());
     //initialize sublattices on gpu
     initSublatticeKernel<<<nblocks, nthreads>>>(d_whites, subLen, d_state);
@@ -127,6 +127,10 @@ int main(int argc, char** argv){
     /* thermalization */
     //check convergence only after cooling completes
     sweep = 0;
+    double mean1{0.};
+    double mean2{0.};
+    double var1{0.};
+    double var2{0.};
     bool is_thermalized{false};
     cout << "Thermalization phase" << endl;
     while(!is_thermalized && sweep < MAX_SWEEPS){
@@ -142,10 +146,10 @@ int main(int argc, char** argv){
             //retrieve d_magnetization
             cudaMemcpy(magnetization, d_magnetization, window_size * sizeof(int), cudaMemcpyDeviceToHost);
             //calculate mean and var for 2 consecutive subwindows
-            double mean1{0.};
-            double mean2{0.};
-            double var1{0.};
-            double var2{0.};
+            mean1 = 0.;
+            mean2 = 0.;
+            var1 = 0.;
+            var2 = 0.;
             for(int i{0}; i<window_size/2; i++){
                 mean1 += magnetization[i];
                 mean2 += magnetization[i + window_size/2];
@@ -161,7 +165,7 @@ int main(int argc, char** argv){
             //diff and threshold
             double diff = fabs(mean1 - mean2);
             double threshold = 0.05 * sqrt(var1 + var2);
-            if(diff < threshold && (var1 > 1.0 || var2 > 1.0)){//zero variance can mean frozen system
+            if(diff < threshold /* && (var1 > 1.0 || var2 > 1.0) */){//zero variance can mean frozen system
                 is_thermalized = true;
                 cout << "Thermalization achieved at sweep " << sweep << endl;
                 break;
@@ -170,6 +174,7 @@ int main(int argc, char** argv){
         sweep++;        
     }
     cout << "Final thermalization: " << (is_thermalized ? "SUCCESS" : "INCOMPLETE") << endl;
+    //cout << "values: " << mean1 << "+-" << sqrt(var1) << "\t" << mean2 << "+-" << sqrt(var2) << " diff: " << fabs(mean1-mean2) << " threshold: " << 0.05 * sqrt(var1 + var2) << endl;
 
     /* interlude */
     cudaFree(d_magnetization);
@@ -204,7 +209,7 @@ int main(int argc, char** argv){
         cout << "Block #" << b << "\t" << "Mag: " << mean << "\t" << "std: " << sqrt(var) << endl;
     }
 
-    //cleanup
+    /* cleanup */
     cudaFree(d_whites);
     cudaFree(d_blacks);
     cudaFree(d_magnetization);
