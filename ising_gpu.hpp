@@ -1,6 +1,11 @@
 #include <random>
 #include <cmath>
 #include <curand_kernel.h>
+#include <thrust/device_ptr.h>
+#include <thrust/reduce.h>
+#include <thrust/functional.h>
+#include <thrust/iterator/constant_iterator.h>
+#include <thrust/iterator/discard_iterator.h>
 
 using namespace std;
 
@@ -14,11 +19,13 @@ struct DataBlock{
     int* whites;
     int* blacks;
     int size;
+    int Len;
     int subLen;
     int subSize;
     double temp;
     curandStatePhilox4_32_10_t *state;
     int* magnetization;
+    //int* magnetization_thrust;
 };
 
 __global__ void initCurand(curandStatePhilox4_32_10_t *state, unsigned long seed){
@@ -108,6 +115,18 @@ __global__ void reduceMagnetizationKernel(const int* whites, const int* blacks, 
     atomicAdd(out, partial);
 }
 
+void reduceMagnetizationThrust(int* whites, int lattLen, int* out){
+    thrust::device_ptr<int> lattce_ptr(whites);
+
+    thrust::device_ptr<int> out_ptr(out); //out is passed already with +n_sweep
+    
+    thrust::constant_iterator<int> keys_first(0);
+    thrust::constant_iterator<int> keys_last = keys_first + lattLen;
+
+    thrust::reduce_by_key(keys_first, keys_last, lattce_ptr, thrust::make_discard_iterator(), out_ptr);
+
+}
+
 template<BoundaryCondition BC>
 void blockSweepKernel(DataBlock* d, int blockSweeps, int n_blocks, int n_threads){
     for(int s = 0; s < blockSweeps; s++){
@@ -115,8 +134,9 @@ void blockSweepKernel(DataBlock* d, int blockSweeps, int n_blocks, int n_threads
             d->whites, d->blacks, true, d->size, d->subSize, d->temp, d->state);
         updateSublatticeKernel<BC><<<n_blocks, n_threads>>>(
             d->blacks, d->whites, false, d->size, d->subSize, d->temp, d->state);
-        reduceMagnetizationKernel<<<n_blocks, n_threads>>>(
-            d->whites, d->blacks, d->subLen, &d->magnetization[s]);
+        //reduceMagnetizationKernel<<<n_blocks, n_threads>>>(
+        //    d->whites, d->blacks, d->subLen, &d->magnetization[s]);
+        reduceMagnetizationThrust(d->whites, d->Len, &d->magnetization[s]);
     }
 }
 

@@ -79,16 +79,18 @@ int main(int argc, char** argv){
     cout << "Grid size: " << size << "x" << size << endl;
     int subSize = size/2; //numbers of columns for each sublattice
     int subLen = size*subSize; //length of each sublattice array (total number of elements)
+    int Len = 2*subLen; //total number of elements in the lattice
     //determine grid and block dimensions
     int nthreads = subLen;
     if(subLen > 1024) nthreads = 1024;
     int nblocks = (subLen + nthreads - 1) / nthreads;
     cout << "Launching kernel with " << nblocks << " blocks and " << nthreads << " threads per block." << endl;
     //allocate arrays on gpu
-    int* d_whites;
-    int* d_blacks;
-    cudaMalloc(&d_whites, subLen * sizeof(int));
-    cudaMalloc(&d_blacks, subLen * sizeof(int));
+    //allocate a contiguous block for both sublattices (useful for thrust reduction)
+    int* d_lattice;
+    cudaMalloc(&d_lattice, 2 * subLen * sizeof(int));
+    int* d_whites = d_lattice;
+    int* d_blacks = d_lattice + subLen;
     //init curand state
     std::random_device rd;
     //int rd{42};
@@ -201,12 +203,15 @@ int main(int argc, char** argv){
     d.whites = d_whites;
     d.blacks = d_blacks;
     d.size = size;
+    d.Len = Len;
     d.subSize = subSize;
     d.subLen = subLen;
     d.temp = temp;
     d.state = d_state;
     cudaMalloc(&d.magnetization, blocksize * sizeof(int));
     cudaMemset(d.magnetization, 0, blocksize * sizeof(int));
+    //cudaMalloc(&d.magnetization_thrust, blocksize * sizeof(int));
+    //cudaMemset(d.magnetization_thrust, 0, blocksize * sizeof(int));
 
     /* simulation/measure */
     //may need just one block but oh well
@@ -223,12 +228,18 @@ int main(int argc, char** argv){
         cudaMemset(d.magnetization, 0, blocksize * sizeof(int));
         double mean = compute_mean(magnetization, blocksize);
         double var = compute_var(magnetization, blocksize, mean);
+        //copy thrust magnetization values
+        //cudaMemcpy(magnetization, d.magnetization_thrust, sizeof(int), cudaMemcpyDeviceToHost);
+        //double thrust_mean = compute_mean(magnetization, blocksize);
+        //double thrust_var = compute_var(magnetization, blocksize, thrust_mean);
         cout << "Block #" << b << "\t" << "Mag: " << mean << "\t" << "std: " << sqrt(var) << endl;
+        //cout << "Block #" << b << "\t" << "Mag: " << thrust_mean << "\t" << "std: " << sqrt(thrust_var) << endl;
     }
 
     /* cleanup */
-    cudaFree(d_whites);
-    cudaFree(d_blacks);
+    //cudaFree(d_whites);
+    //cudaFree(d_blacks);
+    cudaFree(d_lattice);
     cudaFree(d_magnetization);
     cudaFree(d_state);
     delete[] magnetization;
