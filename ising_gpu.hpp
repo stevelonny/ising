@@ -108,17 +108,17 @@ __global__ void reduceMagnetizationKernel(const int* whites, const int* blacks, 
     atomicAdd(out, partial);
 }
 
-
-/* void blockSweepKernel(DataBlock* d, int blockSweeps, int n_blocks, int n_threads){
+template<BoundaryCondition BC>
+void blockSweepKernel(DataBlock* d, int blockSweeps, int n_blocks, int n_threads){
     for(int s = 0; s < blockSweeps; s++){
-        updateSublatticeKernel<<<n_blocks, n_threads>>>(
+        updateSublatticeKernel<BC><<<n_blocks, n_threads>>>(
             d->whites, d->blacks, true, d->size, d->subSize, d->temp, d->state);
-        updateSublatticeKernel<<<n_blocks, n_threads>>>(
+        updateSublatticeKernel<BC><<<n_blocks, n_threads>>>(
             d->blacks, d->whites, false, d->size, d->subSize, d->temp, d->state);
         reduceMagnetizationKernel<<<n_blocks, n_threads>>>(
             d->whites, d->blacks, d->subLen, &d->magnetization[s]);
     }
-} */
+}
 
 int* initSubLattice(int subLen, std::mt19937& gen){
     int* subLattice = new int[subLen];

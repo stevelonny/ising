@@ -36,8 +36,8 @@ double compute_var(int* data, int n, double mean){
 
 int main(int argc, char** argv){
 
-    if(argc != 5){ 
-        cerr << "Usage: " << argv[0] << " <power of 2 for grid_size> <temperature> <nblocksweeps> <blocksize>" << endl;
+    if(argc != 5 && argc != 6){ 
+        cerr << "Usage: " << argv[0] << " <power of 2 for grid_size> <temperature> <nblocksweeps> <blocksize> [obc|pbc]" << endl;
         return -1;
     }
     int power2 = stoi(argv[1]);
@@ -60,7 +60,20 @@ int main(int argc, char** argv){
         cerr << "Block size must be positive." << endl;
         return -1;
     }
-    
+    bool obc = false;
+    if(argc == 6){
+        if(string(argv[5]) == "obc"){
+            obc = true;
+        }
+        else if(string(argv[5]) == "pbc"){
+            obc = false;
+        }
+        else{
+            cerr << "Invalid boundary condition. Use 'obc' or 'pbc'." << endl;
+            return -1;
+        }
+    }
+
     /* setup */
     int size = 1 << power2; // grid size is 2^power2
     cout << "Grid size: " << size << "x" << size << endl;
@@ -87,8 +100,6 @@ int main(int argc, char** argv){
     initSublatticeKernel<<<nblocks, nthreads>>>(d_blacks, subLen, d_state);
     cudaDeviceSynchronize();
 
-    /* annealing */
-    //useful when using open border condition
     int sweep{0};
     int index{0};
     int window_size{500};
@@ -96,47 +107,55 @@ int main(int argc, char** argv){
     cudaMalloc(&d_magnetization, window_size * sizeof(int));
     cudaMemset(d_magnetization, 0, window_size * sizeof(int));
     int* magnetization = new int[window_size];
-
-    //temperature annealing schedule: cool from high T to target over 1000 sweeps
-    int anneal_sweeps = 1000;
-    double T_start{5.0};
-    double T_current{5.0};
-    std::cout << "Annealing phase (annealing T: " << T_start << " -> " << temp << ")" << endl;
-    while(sweep < anneal_sweeps){
-        T_current = T_start - (T_start - temp) * ((double)sweep / (double)(anneal_sweeps - 1));
-        
-        //perform mc sweep
-        updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, T_current, d_state);
-        updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, T_current, d_state);
-        //compute magnetization
-        index = sweep%window_size;
-        cudaMemset(&d_magnetization[index], 0, sizeof(int));
-        reduceMagnetizationKernel<<<nblocks, nthreads>>>(d_whites, d_blacks, subLen, &d_magnetization[index]);
-
-        if(sweep%100 == 0){
-            cudaMemcpy(&magnetization[index], &d_magnetization[index], sizeof(int), cudaMemcpyDeviceToHost);
-            cout  << "Sweep " << sweep << "\tT: " << T_current << "\tMag: " << magnetization[index] << endl;
-        }
-
-        sweep++;
-    }
-    cudaMemcpy(&magnetization[index], &d_magnetization[index], sizeof(int), cudaMemcpyDeviceToHost);
-    cout << "Sweep " << sweep << "\tT: " << T_current << "\tMag: " << magnetization[index] << endl;
-    cout << "Resetting sweep counter." << endl;
     
+    /* annealing */
+    //useful when using open border condition
+    if(obc==true){ //temperature annealing schedule: cool from high T to target over 1000 sweeps
+        int anneal_sweeps = 1000;
+        double T_start{5.0};
+        double T_current{5.0};
+        std::cout << "Annealing phase (annealing T: " << T_start << " -> " << temp << ")" << endl;
+        while(sweep < anneal_sweeps){
+            T_current = T_start - (T_start - temp) * ((double)sweep / (double)(anneal_sweeps - 1));
+            
+            //perform mc sweep
+            updateSublatticeKernel<Open><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, T_current, d_state);
+            updateSublatticeKernel<Open><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, T_current, d_state);
+            //compute magnetization
+            index = sweep%window_size;
+            cudaMemset(&d_magnetization[index], 0, sizeof(int));
+            reduceMagnetizationKernel<<<nblocks, nthreads>>>(d_whites, d_blacks, subLen, &d_magnetization[index]);
+
+            if(sweep%100 == 0){
+                cudaMemcpy(&magnetization[index], &d_magnetization[index], sizeof(int), cudaMemcpyDeviceToHost);
+                std::cout  << "Sweep " << sweep << "\tT: " << T_current << "\tMag: " << magnetization[index] << endl;
+            }
+
+            sweep++;
+        }
+        cudaMemcpy(&magnetization[index], &d_magnetization[index], sizeof(int), cudaMemcpyDeviceToHost);
+        std::cout << "Sweep " << sweep << "\tT: " << T_current << "\tMag: " << magnetization[index] << endl;
+        std::cout << "Resetting sweep counter." << endl;
+        sweep = 0;
+    }
     /* thermalization */
     //check convergence only after cooling completes
-    sweep = 0;
     double mean1{0.};
     double mean2{0.};
     double var1{0.};
     double var2{0.};
     bool is_thermalized{false};
-    cout << "Thermalization phase" << endl;
+    std::cout << "Thermalization phase" << endl;
     while(!is_thermalized && sweep < MAX_SWEEPS){
         //perform mc sweep
-        updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, temp, d_state);
-        updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, temp, d_state);
+        if(obc){
+            updateSublatticeKernel<Open><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, temp, d_state);
+            updateSublatticeKernel<Open><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, temp, d_state);
+        }
+        else{
+            updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, temp, d_state);
+            updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, temp, d_state);
+        }
         //compute magnetization
         index = sweep%window_size;
         cudaMemset(&d_magnetization[index], 0, sizeof(int));
@@ -193,13 +212,11 @@ int main(int argc, char** argv){
     //may need just one block but oh well
     for(int b{0}; b<nblocksweeps; b++){
         //single block sweep
-        for(int s = 0; s < blocksize; s++){
-            updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(
-                d.whites, d.blacks, true, d.size, d.subSize, d.temp, d.state);
-            updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(
-                d.blacks, d.whites, false, d.size, d.subSize, d.temp, d.state);
-            reduceMagnetizationKernel<<<nblocks, nthreads>>>(
-                d.whites, d.blacks, d.subLen, &d.magnetization[s]);
+        if(obc){
+            blockSweepKernel<Open>(&d, blocksize, nblocks, nthreads);
+        }
+        else{
+            blockSweepKernel<Periodic>(&d, blocksize, nblocks, nthreads);
         }
         //copy magnetization values
         cudaMemcpy(magnetization, d.magnetization, blocksize * sizeof(int), cudaMemcpyDeviceToHost);
