@@ -1,9 +1,11 @@
 #include "ising_gpu.hpp"
 #include <cuda_runtime.h>
-#include <iostream>
 #include <fstream>
 #include <cmath>
 #include <random>
+#include <cstdio>
+#include <fmt/format.h>
+#include <fmt/ostream.h>
 //#include <algorithm>
 
 using namespace std;
@@ -37,46 +39,51 @@ double compute_var(int* data, int n, double mean){
 int main(int argc, char** argv){
 
     if(argc != 5 && argc != 6){ 
-        cerr << "Usage: " << argv[0] << " <power of 2 for grid_size> <temperature> <nblocksweeps> <blocksize> [obc|pbc]" << endl;
+        fmt::print(stderr, "Usage: {} <power of 2 for grid_size> <temperature> <nblocksweeps> <blocksize> [obc|pbc]\n", argv[0]);
         return -1;
     }
     int power2 = stoi(argv[1]);
     if(power2 <= 0){
-        cerr << "Power of 2 for grid size must be a positive integer." << endl;
+        fmt::print(stderr, "Power of 2 for grid size must be a positive integer.\n");
         return -1;
     }
     double temp = stod(argv[2]);
     if(temp <= 0.0){
-        cerr << "Temperature must be positive." << endl;
+        fmt::print(stderr, "Temperature must be positive.\n");
         return -1;
     }
     int nblocksweeps = stoi(argv[3]);
     if(nblocksweeps <= 0){
-        cerr << "Number of blocksweeps must be positive." << endl;
+        fmt::print(stderr, "Number of blocksweeps must be positive.\n");
         return -1;
     }
     int blocksize = stoi(argv[4]);
     if(blocksize <= 0){
-        cerr << "Block size must be positive." << endl;
+        fmt::print(stderr, "Block size must be positive.\n");
         return -1;
     }
     bool obc = false;
     if(argc == 6){
         if(string(argv[5]) == "obc"){
             obc = true;
+            fmt::println("Using open boundary conditions.");
         }
         else if(string(argv[5]) == "pbc"){
             obc = false;
+            fmt::println("Using periodic boundary conditions.");
         }
         else{
-            cerr << "Invalid boundary condition. Use 'obc' or 'pbc'." << endl;
+            fmt::print(stderr, "Invalid boundary condition. Use 'obc' or 'pbc'.\n");
             return -1;
         }
+    }
+    else{
+        fmt::println("Using default periodic boundary conditions.");
     }
 
     /* setup */
     int size = 1 << power2; // grid size is 2^power2
-    cout << "Grid size: " << size << "x" << size << endl;
+    fmt::println("Grid size: {}x{}", size, size);
     int subSize = size/2; //numbers of columns for each sublattice
     int subLen = size*subSize; //length of each sublattice array (total number of elements)
     int Len = 2*subLen; //total number of elements in the lattice
@@ -84,7 +91,7 @@ int main(int argc, char** argv){
     int nthreads = subLen;
     if(subLen > 1024) nthreads = 1024;
     int nblocks = (subLen + nthreads - 1) / nthreads;
-    cout << "Launching kernel with " << nblocks << " blocks and " << nthreads << " threads per block." << endl;
+    fmt::println("Launching kernel with {} blocks and {} threads per block.", nblocks, nthreads);
     //allocate arrays on gpu
     //allocate a contiguous block for both sublattices (useful for thrust reduction)
     int* d_lattice;
@@ -112,11 +119,11 @@ int main(int argc, char** argv){
     
     /* annealing */
     //useful when using open border condition
-    if(obc==true){ //temperature annealing schedule: cool from high T to target over 1000 sweeps
+    if(obc){ //temperature annealing schedule: cool from high T to target over 1000 sweeps
         int anneal_sweeps = 1000;
         double T_start{5.0};
         double T_current{5.0};
-        std::cout << "Annealing phase (annealing T: " << T_start << " -> " << temp << ")" << endl;
+        fmt::println("Annealing phase (annealing T: {} -> {})", T_start, temp);
         while(sweep < anneal_sweeps){
             T_current = T_start - (T_start - temp) * ((double)sweep / (double)(anneal_sweeps - 1));
             
@@ -130,14 +137,42 @@ int main(int argc, char** argv){
 
             if(sweep%100 == 0){
                 cudaMemcpy(&magnetization[index], &d_magnetization[index], sizeof(int), cudaMemcpyDeviceToHost);
-                std::cout  << "Sweep " << sweep << "\tT: " << T_current << "\tMag: " << magnetization[index] << endl;
+                fmt::println("Sweep {:<6} T: {:<6.1f} Mag: {:<10}", sweep, T_current, magnetization[index]);
             }
 
             sweep++;
         }
         cudaMemcpy(&magnetization[index], &d_magnetization[index], sizeof(int), cudaMemcpyDeviceToHost);
-        std::cout << "Sweep " << sweep << "\tT: " << T_current << "\tMag: " << magnetization[index] << endl;
-        std::cout << "Resetting sweep counter." << endl;
+        fmt::println("Sweep {:<6} T: {:<6.1f} Mag: {:<10}", sweep, T_current, magnetization[index]);
+        fmt::println("Resetting sweep counter.");
+        sweep = 0;
+    }
+    if(!obc && size < 512){
+        int anneal_sweeps = 1000;
+        double T_start{5.0};
+        double T_current{5.0};
+        fmt::println("Annealing phase (annealing T: {} -> {})", T_start, temp);
+        while(sweep < anneal_sweeps){
+            T_current = T_start - (T_start - temp) * ((double)sweep / (double)(anneal_sweeps - 1));
+            
+            //perform mc sweep
+            updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, T_current, d_state);
+            updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, T_current, d_state);
+            //compute magnetization
+            index = sweep%window_size;
+            cudaMemset(&d_magnetization[index], 0, sizeof(int));
+            reduceMagnetizationKernel<<<nblocks, nthreads>>>(d_whites, d_blacks, subLen, &d_magnetization[index]);
+
+            if(sweep%100 == 0){
+                cudaMemcpy(&magnetization[index], &d_magnetization[index], sizeof(int), cudaMemcpyDeviceToHost);
+                fmt::println("Sweep {:<6} T: {:<6.1f} Mag: {:<10}", sweep, T_current, magnetization[index]);
+            }
+
+            sweep++;
+        }
+        cudaMemcpy(&magnetization[index], &d_magnetization[index], sizeof(int), cudaMemcpyDeviceToHost);
+        fmt::println("Sweep {:<6} T: {:<6.1f} Mag: {:<10}", sweep, T_current, magnetization[index]);
+        fmt::println("Resetting sweep counter.");
         sweep = 0;
     }
     /* thermalization */
@@ -147,7 +182,7 @@ int main(int argc, char** argv){
     double var1{0.};
     double var2{0.};
     bool is_thermalized{false};
-    std::cout << "Thermalization phase" << endl;
+    fmt::println("Thermalization phase");
     while(!is_thermalized && sweep < MAX_SWEEPS){
         //perform mc sweep
         if(obc){
@@ -185,21 +220,22 @@ int main(int argc, char** argv){
             var2 /= (double)window_size/2.;
             //diff and threshold
             double diff = fabs(mean1 - mean2);
-            double threshold = 0.05 * sqrt(var1 + var2);
+            double threshold = min(0.05 * sqrt(var1 + var2), 1e-5);
             if(diff < threshold /* && (var1 > 1.0 || var2 > 1.0) */){//zero variance can mean frozen system
                 is_thermalized = true;
-                cout << "Thermalization achieved at sweep " << sweep << endl;
+                fmt::println("Thermalization achieved at sweep {}", sweep);
                 break;
             }
         }
         sweep++;        
     }
-    cout << "Final thermalization: " << (is_thermalized ? "SUCCESS" : "INCOMPLETE") << endl;
+    fmt::println("Final thermalization: {}", (is_thermalized ? "SUCCESS" : "INCOMPLETE"));
     //cout << "values: " << mean1 << "+-" << sqrt(var1) << "\t" << mean2 << "+-" << sqrt(var2) << " diff: " << fabs(mean1-mean2) << " threshold: " << 0.05 * sqrt(var1 + var2) << endl;
 
     /* interlude */
     cudaFree(d_magnetization);
     DataBlock d;
+    d.lattice = d_lattice;
     d.whites = d_whites;
     d.blacks = d_blacks;
     d.size = size;
@@ -212,6 +248,11 @@ int main(int argc, char** argv){
     cudaMemset(d.magnetization, 0, blocksize * sizeof(int));
     //cudaMalloc(&d.magnetization_thrust, blocksize * sizeof(int));
     //cudaMemset(d.magnetization_thrust, 0, blocksize * sizeof(int));
+    //open fileout
+    string filename = fmt::format("size_{}_b{}_n{}_bc_{}.dat", size, nblocksweeps, blocksize, (obc ? "obc" : "pbc"));
+    ofstream fileout;
+    fileout.open(filename, ios::app);
+
 
     /* simulation/measure */
     //may need just one block but oh well
@@ -232,7 +273,8 @@ int main(int argc, char** argv){
         //cudaMemcpy(magnetization, d.magnetization_thrust, sizeof(int), cudaMemcpyDeviceToHost);
         //double thrust_mean = compute_mean(magnetization, blocksize);
         //double thrust_var = compute_var(magnetization, blocksize, thrust_mean);
-        cout << "Block #" << b << "\t" << "Mag: " << mean << "\t" << "std: " << sqrt(var) << endl;
+        fmt::println("Block #{:<6} Mag: {:<15.2f} std: {:<10.2f}", b, mean, sqrt(var));
+        fmt::print(fileout, "{:<3.1f} {:<6} {:<15.2f} {:<10.2f}\n", temp, b, mean, sqrt(var));
         //cout << "Block #" << b << "\t" << "Mag: " << thrust_mean << "\t" << "std: " << sqrt(thrust_var) << endl;
     }
 

@@ -15,7 +15,8 @@ enum BoundaryCondition{
     //Fixed
 };
 
-struct DataBlock{
+struct DataBlock{//all pointers are device pointers
+    int* lattice;
     int* whites;
     int* blacks;
     int size;
@@ -115,15 +116,15 @@ __global__ void reduceMagnetizationKernel(const int* whites, const int* blacks, 
     atomicAdd(out, partial);
 }
 
-void reduceMagnetizationThrust(int* whites, int lattLen, int* out){
-    thrust::device_ptr<int> lattce_ptr(whites);
+void reduceMagnetizationThrust(int* lattice, int lattLen, int* out){
+    thrust::device_ptr<int> lattice_ptr(lattice);
 
     thrust::device_ptr<int> out_ptr(out); //out is passed already with +n_sweep
     
     thrust::constant_iterator<int> keys_first(0);
     thrust::constant_iterator<int> keys_last = keys_first + lattLen;
 
-    thrust::reduce_by_key(keys_first, keys_last, lattce_ptr, thrust::make_discard_iterator(), out_ptr);
+    thrust::reduce_by_key(keys_first, keys_last, lattice_ptr, thrust::make_discard_iterator(), out_ptr);
 
 }
 
@@ -136,7 +137,7 @@ void blockSweepKernel(DataBlock* d, int blockSweeps, int n_blocks, int n_threads
             d->blacks, d->whites, false, d->size, d->subSize, d->temp, d->state);
         //reduceMagnetizationKernel<<<n_blocks, n_threads>>>(
         //    d->whites, d->blacks, d->subLen, &d->magnetization[s]);
-        reduceMagnetizationThrust(d->whites, d->Len, &d->magnetization[s]);
+        reduceMagnetizationThrust(d->lattice, d->Len, &d->magnetization[s]);
     }
 }
 

@@ -1,6 +1,8 @@
 # Ising 2D Simulation
 Simple code to simulate an Ising 2D lattice with a basic algorithm that can be run both on CPU and GPU. Project made for the Metodi Computazionali per la Fisica @ UNIMI A.Y. 2025-2026. The scope of this project is to understand coding on CUDA hardware.
 
+Depends on fmtlib/fmt
+
 ## Files
 - `ising_cpu.hpp`
 - `ising_gpu.hpp`
