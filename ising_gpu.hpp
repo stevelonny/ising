@@ -9,6 +9,8 @@
 
 using namespace std;
 
+__constant__ float d_expTable[5];
+
 enum BoundaryCondition{
     Open,
     Periodic
@@ -24,6 +26,7 @@ struct DataBlock{//all pointers are device pointers
     int subLen;
     int subSize;
     double temp;
+    //float* expTable; //index by 2*nearSum*subSpin + 4
     curandStatePhilox4_32_10_t *state;
     int* magnetization;
     //int* magnetization_thrust;
@@ -81,13 +84,14 @@ __device__ inline int getNeighbourSum(int* opponent, int index, int size, int su
 }
 
 template<BoundaryCondition BC>
-__global__ void updateSublatticeKernel(int* subLattice, int* opponent, bool isWhite, int size, int subSize, double temp, curandStatePhilox4_32_10_t *state){
+__global__ void updateSublatticeKernel(int* subLattice, int* opponent, bool isWhite, int size, int subSize, curandStatePhilox4_32_10_t *state){
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     if(id >= size * subSize) return;
     int nearSum = getNeighbourSum<BC>(opponent, id, size, subSize, isWhite);
-    float deltaE = 2.*(float)subLattice[id] * (float)nearSum;
+    int deltaE = 2 * subLattice[id] * nearSum;
+    int exp_idx = (deltaE + 8) / 4;
     float r = curand_uniform(&state[id]);
-    if(r < exp(-deltaE / temp)){
+    if(r < d_expTable[exp_idx]){
         subLattice[id] *= -1;
     }
 }
@@ -132,9 +136,9 @@ template<BoundaryCondition BC>
 void blockSweepKernel(DataBlock* d, int blockSweeps, int n_blocks, int n_threads){
     for(int s = 0; s < blockSweeps; s++){
         updateSublatticeKernel<BC><<<n_blocks, n_threads>>>(
-            d->whites, d->blacks, true, d->size, d->subSize, d->temp, d->state);
+            d->whites, d->blacks, true, d->size, d->subSize, d->state);
         updateSublatticeKernel<BC><<<n_blocks, n_threads>>>(
-            d->blacks, d->whites, false, d->size, d->subSize, d->temp, d->state);
+            d->blacks, d->whites, false, d->size, d->subSize, d->state);
         //reduceMagnetizationKernel<<<n_blocks, n_threads>>>(
         //    d->whites, d->blacks, d->subLen, &d->magnetization[s]);
         reduceMagnetizationThrust(d->lattice, d->Len, &d->magnetization[s]);

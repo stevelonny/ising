@@ -101,6 +101,9 @@ int main(int argc, char** argv){
     cudaMalloc(&d_lattice, 2 * subLen * sizeof(int));
     int* d_whites = d_lattice;
     int* d_blacks = d_lattice + subLen;
+    int deltaE[5] = {-8, -4, 0, 4, 8};
+    float expTable[5];
+
     //init curand state
     std::random_device rd;
     //int rd{42};
@@ -129,10 +132,13 @@ int main(int argc, char** argv){
         fmt::println("Annealing phase (annealing T: {} -> {})", T_start, temp);
         while(sweep < anneal_sweeps){
             T_current = T_start - (T_start - temp) * ((double)sweep / (double)(anneal_sweeps - 1));
-            
+            for(int i{0}; i<5; i++){
+                expTable[i] = exp(-(float)deltaE[i] / T_current);
+            }
+            cudaMemcpyToSymbol(d_expTable, expTable, 5 * sizeof(float));
             //perform mc sweep
-            updateSublatticeKernel<Open><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, T_current, d_state);
-            updateSublatticeKernel<Open><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, T_current, d_state);
+            updateSublatticeKernel<Open><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, d_state);
+            updateSublatticeKernel<Open><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, d_state);
             //compute magnetization
             index = sweep%window_size;
             cudaMemset(&d_magnetization[index], 0, sizeof(int));
@@ -150,36 +156,7 @@ int main(int argc, char** argv){
         fmt::println("Resetting sweep counter.");
         sweep = 0;
     }
-    /*
-    if(!obc && size < 512){
-        int anneal_sweeps = 1000;
-        double T_start{5.0};
-        double T_current{5.0};
-        fmt::println("Annealing phase (annealing T: {} -> {})", T_start, temp);
-        while(sweep < anneal_sweeps){
-            T_current = T_start - (T_start - temp) * ((double)sweep / (double)(anneal_sweeps - 1));
-            
-            //perform mc sweep
-            updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, T_current, d_state);
-            updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, T_current, d_state);
-            //compute magnetization
-            index = sweep%window_size;
-            cudaMemset(&d_magnetization[index], 0, sizeof(int));
-            reduceMagnetizationKernel<<<nblocks, nthreads>>>(d_whites, d_blacks, subLen, &d_magnetization[index]);
-
-            if(sweep%100 == 0){
-                cudaMemcpy(&magnetization[index], &d_magnetization[index], sizeof(int), cudaMemcpyDeviceToHost);
-                fmt::println("Sweep {:<6} T: {:<6.1f} Mag: {:<10}", sweep, T_current, magnetization[index]);
-            }
-
-            sweep++;
-        }
-        cudaMemcpy(&magnetization[index], &d_magnetization[index], sizeof(int), cudaMemcpyDeviceToHost);
-        fmt::println("Sweep {:<6} T: {:<6.1f} Mag: {:<10}", sweep, T_current, magnetization[index]);
-        fmt::println("Resetting sweep counter.");
-        sweep = 0;
-    }
-    */
+    
     /* thermalization */
     //check convergence only after cooling completes
     double mean1{0.};
@@ -187,16 +164,20 @@ int main(int argc, char** argv){
     double var1{0.};
     double var2{0.};
     bool is_thermalized{false};
+    for(int i{0}; i<5; i++){
+        expTable[i] = exp(-(float)deltaE[i] / temp);
+    }
+    cudaMemcpyToSymbol(d_expTable, expTable, 5 * sizeof(float));
     fmt::println("Thermalization phase");
     while(!is_thermalized && sweep < MAX_SWEEPS){
         //perform mc sweep
         if(obc){
-            updateSublatticeKernel<Open><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, temp, d_state);
-            updateSublatticeKernel<Open><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, temp, d_state);
+            updateSublatticeKernel<Open><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, d_state);
+            updateSublatticeKernel<Open><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, d_state);
         }
         else{
-            updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, temp, d_state);
-            updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, temp, d_state);
+            updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, d_state);
+            updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, d_state);
         }
         //compute magnetization
         index = sweep%window_size;
@@ -235,7 +216,7 @@ int main(int argc, char** argv){
                 break;
             }
         }
-        sweep++;        
+        sweep++;
     }
     fmt::println("Final thermalization: {}", (is_thermalized ? "SUCCESS" : "INCOMPLETE"));
     //fmt::println("values: {}±{}\t{}±{} diff: {:<10.6f} threshold: {:10.6f}", mean1, sqrt(var1), mean2, sqrt(var2), fabs(mean1-mean2), min(0.05 * sqrt(var1 + var2), 1e-5));
@@ -251,6 +232,7 @@ int main(int argc, char** argv){
     d.subSize = subSize;
     d.subLen = subLen;
     d.temp = temp;
+    //d.expTable = d_expTable;
     d.state = d_state;
     cudaMalloc(&d.magnetization, blocksize * sizeof(int));
     cudaMemset(d.magnetization, 0, blocksize * sizeof(int));
