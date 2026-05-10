@@ -64,19 +64,18 @@ int main(int argc, char** argv){
         return -1;
     }
     bool obc = false;
-    if(argc == 6){
-        if(string(argv[5]) == "obc"){
-            obc = true;
-            fmt::println("Using open boundary conditions.");
-        }
-        else if(string(argv[5]) == "pbc"){
-            obc = false;
-            fmt::println("Using periodic boundary conditions.");
-        }
-        else{
-            fmt::print(stderr, "Invalid boundary condition. Use 'obc' or 'pbc'.\n");
-            return -1;
-        }
+    
+    if(string(argv[5]) == "obc"){
+        obc = true;
+        fmt::println("Using open boundary conditions.");
+    }
+    else if(string(argv[5]) == "pbc"){
+        obc = false;
+        fmt::println("Using periodic boundary conditions.");
+    }
+    else{
+        fmt::print(stderr, "Invalid boundary condition. Use 'obc' or 'pbc'.\n");
+        return -1;
     }
     if(argc == 7){
         fmt::println("Run tag: {}", argv[6]);
