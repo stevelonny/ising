@@ -258,6 +258,7 @@ int main(int argc, char** argv){
     //cudaMemset(d.magnetization_thrust, 0, blocksize * sizeof(int));
     //open fileout
     string filename = fmt::format("size_{}_b{}_n{}_bc_{}{}.dat", size, nblocksweeps, blocksize, (obc ? "obc" : "pbc"), "_run" + run_tag);
+    fmt::print("Saving to {}\n", filename);
     ofstream fileout;
     fileout.open(filename);  // Creates new file for each run (no append)
 
