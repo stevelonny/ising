@@ -1,6 +1,7 @@
 #include "ising_gpu.hpp"
 #include <cuda_runtime.h>
 #include <fstream>
+#include <iostream>
 #include <cmath>
 #include <random>
 #include <cstdio>
@@ -220,17 +221,20 @@ int main(int argc, char** argv){
             var2 /= (double)window_size/2.;
             //diff and threshold
             double diff = fabs(mean1 - mean2);
-            double threshold = min(0.05 * sqrt(var1 + var2), 1e-5);
+            double threshold = 0.05 * sqrt(var1 + var2);
             if(diff < threshold /* && (var1 > 1.0 || var2 > 1.0) */){//zero variance can mean frozen system
                 is_thermalized = true;
                 fmt::println("Thermalization achieved at sweep {}", sweep);
+                if(diff < 1e-5){
+                    fmt::println("Very low variance detected. diff: {:<10.6f} threshold: {:<10.6f}", diff, threshold);
+                }
                 break;
             }
         }
         sweep++;        
     }
     fmt::println("Final thermalization: {}", (is_thermalized ? "SUCCESS" : "INCOMPLETE"));
-    //cout << "values: " << mean1 << "+-" << sqrt(var1) << "\t" << mean2 << "+-" << sqrt(var2) << " diff: " << fabs(mean1-mean2) << " threshold: " << 0.05 * sqrt(var1 + var2) << endl;
+    //fmt::println("values: {}±{}\t{}±{} diff: {:<10.6f} threshold: {:10.6f}", mean1, sqrt(var1), mean2, sqrt(var2), fabs(mean1-mean2), min(0.05 * sqrt(var1 + var2), 1e-5));
 
     /* interlude */
     cudaFree(d_magnetization);
