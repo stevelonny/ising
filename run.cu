@@ -39,8 +39,8 @@ double compute_var(int* data, int n, double mean){
 
 int main(int argc, char** argv){
 
-    if(argc != 5 && argc != 6){ 
-        fmt::print(stderr, "Usage: {} <power of 2 for grid_size> <temperature> <nblocksweeps> <blocksize> [obc|pbc]\n", argv[0]);
+    if(argc != 6 && argc != 7){ 
+        fmt::print(stderr, "Usage: {} <power of 2 for grid_size> <temperature> <nblocksweeps> <blocksize> <obc|pbc> <run_tag>\n", argv[0]);
         return -1;
     }
     int power2 = stoi(argv[1]);
@@ -78,9 +78,12 @@ int main(int argc, char** argv){
             return -1;
         }
     }
-    else{
-        fmt::println("Using default periodic boundary conditions.");
+    if(argc == 7){
+        fmt::println("Run tag: {}", argv[6]);
     }
+    //run_tag used for distinguishing different runs, can be used in filename or just printed out
+    //default is empty string
+    string run_tag = (argc == 7) ? argv[6] : "";
 
     /* setup */
     int size = 1 << power2; // grid size is 2^power2
@@ -120,7 +123,7 @@ int main(int argc, char** argv){
     
     /* annealing */
     //useful when using open border condition
-    if(obc){ //temperature annealing schedule: cool from high T to target over 1000 sweeps
+    if(true/* obc */){ //temperature annealing schedule: cool from high T to target over 1000 sweeps
         int anneal_sweeps = 1000;
         double T_start{5.0};
         double T_current{5.0};
@@ -148,6 +151,7 @@ int main(int argc, char** argv){
         fmt::println("Resetting sweep counter.");
         sweep = 0;
     }
+    /*
     if(!obc && size < 512){
         int anneal_sweeps = 1000;
         double T_start{5.0};
@@ -176,6 +180,7 @@ int main(int argc, char** argv){
         fmt::println("Resetting sweep counter.");
         sweep = 0;
     }
+    */
     /* thermalization */
     //check convergence only after cooling completes
     double mean1{0.};
@@ -221,11 +226,11 @@ int main(int argc, char** argv){
             var2 /= (double)window_size/2.;
             //diff and threshold
             double diff = fabs(mean1 - mean2);
-            double threshold = 0.05 * sqrt(var1 + var2);
+            double threshold = max(0.05 * sqrt(var1 + var2), 1e-6);
             if(diff < threshold /* && (var1 > 1.0 || var2 > 1.0) */){//zero variance can mean frozen system
                 is_thermalized = true;
                 fmt::println("Thermalization achieved at sweep {}", sweep);
-                if(diff < 1e-5){
+                if(diff < 1e-6){
                     fmt::println("Very low variance detected. diff: {:<10.6f} threshold: {:<10.6f}", diff, threshold);
                 }
                 break;
@@ -253,9 +258,9 @@ int main(int argc, char** argv){
     //cudaMalloc(&d.magnetization_thrust, blocksize * sizeof(int));
     //cudaMemset(d.magnetization_thrust, 0, blocksize * sizeof(int));
     //open fileout
-    string filename = fmt::format("size_{}_b{}_n{}_bc_{}.dat", size, nblocksweeps, blocksize, (obc ? "obc" : "pbc"));
+    string filename = fmt::format("size_{}_b{}_n{}_bc_{}{}.dat", size, nblocksweeps, blocksize, (obc ? "obc" : "pbc"), "_run" + run_tag);
     ofstream fileout;
-    fileout.open(filename, ios::app);
+    fileout.open(filename);  // Creates new file for each run (no append)
 
 
     /* simulation/measure */

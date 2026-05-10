@@ -4,3 +4,5 @@ old/
 .conda/
 #fmt/
 *.dat
+logs*/
+data*/
