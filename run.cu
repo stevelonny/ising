@@ -135,25 +135,26 @@ int main(int argc, char** argv){
             for(int i{0}; i<5; i++){
                 expTable[i] = exp(-(float)deltaE[i] / T_current);
             }
+            expTable[2] = 1.0; //exp(0) is always 1
             cudaMemcpyToSymbol(d_expTable, expTable, 5 * sizeof(float));
             //perform mc sweep
             updateSublatticeKernel<Open><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, d_state);
             updateSublatticeKernel<Open><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, d_state);
-            //compute magnetization
-            index = sweep%window_size;
-            cudaMemset(&d_magnetization[index], 0, sizeof(int));
-            reduceMagnetizationKernel<<<nblocks, nthreads>>>(d_whites, d_blacks, subLen, &d_magnetization[index]);
+            //compute magnetization (debug/logging)
+            //index = sweep%window_size;
+            //cudaMemset(&d_magnetization[index], 0, sizeof(int));
+            //reduceMagnetizationKernel<<<nblocks, nthreads>>>(d_whites, d_blacks, subLen, &d_magnetization[index]);
 
-            if(sweep%100 == 0){
+            /* if(sweep%100 == 0){
                 cudaMemcpy(&magnetization[index], &d_magnetization[index], sizeof(int), cudaMemcpyDeviceToHost);
                 fmt::println("Sweep {:<6} T: {:<6.1f} Mag: {:<10}", sweep, T_current, magnetization[index]);
-            }
+            } */
 
             sweep++;
         }
-        cudaMemcpy(&magnetization[index], &d_magnetization[index], sizeof(int), cudaMemcpyDeviceToHost);
-        fmt::println("Sweep {:<6} T: {:<6.1f} Mag: {:<10}", sweep, T_current, magnetization[index]);
-        fmt::println("Resetting sweep counter.");
+        //cudaMemcpy(&magnetization[index], &d_magnetization[index], sizeof(int), cudaMemcpyDeviceToHost);
+        //fmt::println("Sweep {:<6} T: {:<6.1f} Mag: {:<10}", sweep, T_current, magnetization[index]);
+        fmt::println("Annealing completed. Resetting sweep counter.");
         sweep = 0;
     }
     
@@ -167,6 +168,7 @@ int main(int argc, char** argv){
     for(int i{0}; i<5; i++){
         expTable[i] = exp(-(float)deltaE[i] / temp);
     }
+    expTable[2] = 1.0; //exp(0) is always 1
     cudaMemcpyToSymbol(d_expTable, expTable, 5 * sizeof(float));
     fmt::println("Thermalization phase");
     while(!is_thermalized && sweep < MAX_SWEEPS){
@@ -182,7 +184,7 @@ int main(int argc, char** argv){
         //compute magnetization
         index = sweep%window_size;
         cudaMemset(&d_magnetization[index], 0, sizeof(int));
-        reduceMagnetizationKernel<<<nblocks, nthreads>>>(d_whites, d_blacks, subLen, &d_magnetization[index]);
+        reduceMagnetizationThrust<<<nblocks, nthreads>>>(d_lattice, Len, &d_magnetization[index]);
 
         if(sweep>=window_size && sweep%100 == 0){
             //retrieve d_magnetization
@@ -232,18 +234,14 @@ int main(int argc, char** argv){
     d.subSize = subSize;
     d.subLen = subLen;
     d.temp = temp;
-    //d.expTable = d_expTable;
     d.state = d_state;
     cudaMalloc(&d.magnetization, blocksize * sizeof(int));
     cudaMemset(d.magnetization, 0, blocksize * sizeof(int));
-    //cudaMalloc(&d.magnetization_thrust, blocksize * sizeof(int));
-    //cudaMemset(d.magnetization_thrust, 0, blocksize * sizeof(int));
     //open fileout
     string filename = fmt::format("size_{}_b{}_n{}_bc_{}{}.dat", size, nblocksweeps, blocksize, (obc ? "obc" : "pbc"), "_run" + run_tag);
     fmt::print("Saving to {}\n", filename);
     ofstream fileout;
-    fileout.open(filename);  // Creates new file for each run (no append)
-
+    fileout.open(filename);
 
     /* simulation/measure */
     //may need just one block but oh well
@@ -260,18 +258,12 @@ int main(int argc, char** argv){
         cudaMemset(d.magnetization, 0, blocksize * sizeof(int));
         double mean = compute_mean(magnetization, blocksize);
         double var = compute_var(magnetization, blocksize, mean);
-        //copy thrust magnetization values
-        //cudaMemcpy(magnetization, d.magnetization_thrust, sizeof(int), cudaMemcpyDeviceToHost);
-        //double thrust_mean = compute_mean(magnetization, blocksize);
-        //double thrust_var = compute_var(magnetization, blocksize, thrust_mean);
+
         fmt::println("Block #{:<6} Mag: {:<15.2f} std: {:<10.2f}", b, mean, sqrt(var));
         fmt::print(fileout, "{:<3.1f} {:<6} {:<15.2f} {:<10.2f}\n", temp, b, mean, sqrt(var));
-        //cout << "Block #" << b << "\t" << "Mag: " << thrust_mean << "\t" << "std: " << sqrt(thrust_var) << endl;
     }
 
     /* cleanup */
-    //cudaFree(d_whites);
-    //cudaFree(d_blacks);
     cudaFree(d_lattice);
     cudaFree(d_magnetization);
     cudaFree(d_state);

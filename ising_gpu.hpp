@@ -139,8 +139,6 @@ void blockSweepKernel(DataBlock* d, int blockSweeps, int n_blocks, int n_threads
             d->whites, d->blacks, true, d->size, d->subSize, d->state);
         updateSublatticeKernel<BC><<<n_blocks, n_threads>>>(
             d->blacks, d->whites, false, d->size, d->subSize, d->state);
-        //reduceMagnetizationKernel<<<n_blocks, n_threads>>>(
-        //    d->whites, d->blacks, d->subLen, &d->magnetization[s]);
         reduceMagnetizationThrust(d->lattice, d->Len, &d->magnetization[s]);
     }
 }
