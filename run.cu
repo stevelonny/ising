@@ -184,7 +184,7 @@ int main(int argc, char** argv){
         //compute magnetization
         index = sweep%window_size;
         cudaMemset(&d_magnetization[index], 0, sizeof(int));
-        reduceMagnetizationThrust<<<nblocks, nthreads>>>(d_lattice, Len, &d_magnetization[index]);
+        reduceMagnetizationThrust(d_lattice, Len, &d_magnetization[index]);
 
         if(sweep>=window_size && sweep%100 == 0){
             //retrieve d_magnetization

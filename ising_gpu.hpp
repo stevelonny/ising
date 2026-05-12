@@ -26,10 +26,8 @@ struct DataBlock{//all pointers are device pointers
     int subLen;
     int subSize;
     double temp;
-    //float* expTable; //index by 2*nearSum*subSpin + 4
     curandStatePhilox4_32_10_t *state;
     int* magnetization;
-    //int* magnetization_thrust;
 };
 
 __global__ void initCurand(curandStatePhilox4_32_10_t *state, unsigned long seed){
