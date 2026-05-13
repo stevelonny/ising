@@ -182,7 +182,6 @@ __global__ void updateSublatticeSharedKernel(int* subLattice, const int* opponen
         float r = curand_uniform(&state[id]);
         updatedSpin = (r < d_expTable[exp_idx]) ? -shSub[tileIndex] : shSub[tileIndex];
         subLattice[id] = updatedSpin;
-        shSub[tileIndex] = updatedSpin;
     }
 
     blockReduction[localIndex] = valid ? updatedSpin : 0;
@@ -241,8 +240,8 @@ void blockSweepKernel(DataBlock* d, int blockSweeps, int n_blocks, int n_threads
         dim3 threads(32, 16);
         dim3 blocks((d->subSize + threads.x - 1) / threads.x, (d->size + threads.y - 1) / threads.y);
         size_t shmemBytes = (2 * (threads.x + 2) * (threads.y + 2) + threads.x * threads.y) * sizeof(int);
+        cudaMemset(d->magnetization, 0, blockSweeps * sizeof(int));
         for(int s = 0; s < blockSweeps; s++){
-            cudaMemset(&d->magnetization[s], 0, sizeof(int));
             updateSublatticeSharedKernel<BC><<<blocks, threads, shmemBytes>>>(
                 d->whites, d->blacks, true, d->size, d->subSize, d->state, &d->magnetization[s]);
             updateSublatticeSharedKernel<BC><<<blocks, threads, shmemBytes>>>(
