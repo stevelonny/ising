@@ -101,15 +101,13 @@ __global__ void updateSublatticeKernel(int* subLattice, int* opponent, bool isWh
 }
 
 template<BoundaryCondition BC>
-__device__ inline int readWithBoundary(const int* lattice, int row, int col, int size, int subSize){
+__device__ inline int readWithBoundary(const int* lattice, int row, int col, int size, int subSize, bool sizePow2, bool subSizePow2){
     if(BC == Open){
         if(row < 0 || row >= size || col < 0 || col >= subSize){
             return 0;
         }
         return lattice[row * subSize + col];
     }
-    bool sizePow2 = (size & (size - 1)) == 0;
-    bool subSizePow2 = (subSize & (subSize - 1)) == 0;
     int wrappedRow = sizePow2 ? (row & (size - 1)) : ((row % size + size) % size);
     int wrappedCol = subSizePow2 ? (col & (subSize - 1)) : ((col % subSize + subSize) % subSize);
     return lattice[wrappedRow * subSize + wrappedCol];
@@ -125,46 +123,52 @@ __global__ void updateSublatticeSharedKernel(int* subLattice, const int* opponen
     int localIndex = threadIdx.y * blockDim.x + threadIdx.x;
     int tileIndex = ly * tileWidth + lx;
     bool valid = (gy < size && gx < subSize);
+    bool sizePow2 = (size & (size - 1)) == 0;
+    bool subSizePow2 = (subSize & (subSize - 1)) == 0;
 
     extern __shared__ int shared[];
     int* shSub = shared;
     int* shOpp = shSub + (blockDim.x + 2) * (blockDim.y + 2);
-    int* blockReduction = shOpp + (blockDim.x + 2) * (blockDim.y + 2);
+    __shared__ int blockSum;
+    if(localIndex == 0){
+        blockSum = 0;
+    }
+    __syncthreads();
 
-    shSub[tileIndex] = readWithBoundary<BC>(subLattice, gy, gx, size, subSize);
-    shOpp[tileIndex] = readWithBoundary<BC>(opponent, gy, gx, size, subSize);
+    shSub[tileIndex] = readWithBoundary<BC>(subLattice, gy, gx, size, subSize, sizePow2, subSizePow2);
+    shOpp[tileIndex] = readWithBoundary<BC>(opponent, gy, gx, size, subSize, sizePow2, subSizePow2);
 
     if(threadIdx.x == 0){
-        shSub[ly * tileWidth] = readWithBoundary<BC>(subLattice, gy, gx - 1, size, subSize);
-        shOpp[ly * tileWidth] = readWithBoundary<BC>(opponent, gy, gx - 1, size, subSize);
+        shSub[ly * tileWidth] = readWithBoundary<BC>(subLattice, gy, gx - 1, size, subSize, sizePow2, subSizePow2);
+        shOpp[ly * tileWidth] = readWithBoundary<BC>(opponent, gy, gx - 1, size, subSize, sizePow2, subSizePow2);
     }
     if(threadIdx.x == blockDim.x - 1){
-        shSub[ly * tileWidth + (blockDim.x + 1)] = readWithBoundary<BC>(subLattice, gy, gx + 1, size, subSize);
-        shOpp[ly * tileWidth + (blockDim.x + 1)] = readWithBoundary<BC>(opponent, gy, gx + 1, size, subSize);
+        shSub[ly * tileWidth + (blockDim.x + 1)] = readWithBoundary<BC>(subLattice, gy, gx + 1, size, subSize, sizePow2, subSizePow2);
+        shOpp[ly * tileWidth + (blockDim.x + 1)] = readWithBoundary<BC>(opponent, gy, gx + 1, size, subSize, sizePow2, subSizePow2);
     }
     if(threadIdx.y == 0){
-        shSub[lx] = readWithBoundary<BC>(subLattice, gy - 1, gx, size, subSize);
-        shOpp[lx] = readWithBoundary<BC>(opponent, gy - 1, gx, size, subSize);
+        shSub[lx] = readWithBoundary<BC>(subLattice, gy - 1, gx, size, subSize, sizePow2, subSizePow2);
+        shOpp[lx] = readWithBoundary<BC>(opponent, gy - 1, gx, size, subSize, sizePow2, subSizePow2);
     }
     if(threadIdx.y == blockDim.y - 1){
-        shSub[(blockDim.y + 1) * tileWidth + lx] = readWithBoundary<BC>(subLattice, gy + 1, gx, size, subSize);
-        shOpp[(blockDim.y + 1) * tileWidth + lx] = readWithBoundary<BC>(opponent, gy + 1, gx, size, subSize);
+        shSub[(blockDim.y + 1) * tileWidth + lx] = readWithBoundary<BC>(subLattice, gy + 1, gx, size, subSize, sizePow2, subSizePow2);
+        shOpp[(blockDim.y + 1) * tileWidth + lx] = readWithBoundary<BC>(opponent, gy + 1, gx, size, subSize, sizePow2, subSizePow2);
     }
     if(threadIdx.x == 0 && threadIdx.y == 0){
-        shSub[0] = readWithBoundary<BC>(subLattice, gy - 1, gx - 1, size, subSize);
-        shOpp[0] = readWithBoundary<BC>(opponent, gy - 1, gx - 1, size, subSize);
+        shSub[0] = readWithBoundary<BC>(subLattice, gy - 1, gx - 1, size, subSize, sizePow2, subSizePow2);
+        shOpp[0] = readWithBoundary<BC>(opponent, gy - 1, gx - 1, size, subSize, sizePow2, subSizePow2);
     }
     if(threadIdx.x == blockDim.x - 1 && threadIdx.y == 0){
-        shSub[blockDim.x + 1] = readWithBoundary<BC>(subLattice, gy - 1, gx + 1, size, subSize);
-        shOpp[blockDim.x + 1] = readWithBoundary<BC>(opponent, gy - 1, gx + 1, size, subSize);
+        shSub[blockDim.x + 1] = readWithBoundary<BC>(subLattice, gy - 1, gx + 1, size, subSize, sizePow2, subSizePow2);
+        shOpp[blockDim.x + 1] = readWithBoundary<BC>(opponent, gy - 1, gx + 1, size, subSize, sizePow2, subSizePow2);
     }
     if(threadIdx.x == 0 && threadIdx.y == blockDim.y - 1){
-        shSub[(blockDim.y + 1) * tileWidth] = readWithBoundary<BC>(subLattice, gy + 1, gx - 1, size, subSize);
-        shOpp[(blockDim.y + 1) * tileWidth] = readWithBoundary<BC>(opponent, gy + 1, gx - 1, size, subSize);
+        shSub[(blockDim.y + 1) * tileWidth] = readWithBoundary<BC>(subLattice, gy + 1, gx - 1, size, subSize, sizePow2, subSizePow2);
+        shOpp[(blockDim.y + 1) * tileWidth] = readWithBoundary<BC>(opponent, gy + 1, gx - 1, size, subSize, sizePow2, subSizePow2);
     }
     if(threadIdx.x == blockDim.x - 1 && threadIdx.y == blockDim.y - 1){
-        shSub[(blockDim.y + 1) * tileWidth + (blockDim.x + 1)] = readWithBoundary<BC>(subLattice, gy + 1, gx + 1, size, subSize);
-        shOpp[(blockDim.y + 1) * tileWidth + (blockDim.x + 1)] = readWithBoundary<BC>(opponent, gy + 1, gx + 1, size, subSize);
+        shSub[(blockDim.y + 1) * tileWidth + (blockDim.x + 1)] = readWithBoundary<BC>(subLattice, gy + 1, gx + 1, size, subSize, sizePow2, subSizePow2);
+        shOpp[(blockDim.y + 1) * tileWidth + (blockDim.x + 1)] = readWithBoundary<BC>(opponent, gy + 1, gx + 1, size, subSize, sizePow2, subSizePow2);
     }
     __syncthreads();
 
@@ -184,17 +188,12 @@ __global__ void updateSublatticeSharedKernel(int* subLattice, const int* opponen
         subLattice[id] = updatedSpin;
     }
 
-    blockReduction[localIndex] = valid ? updatedSpin : 0;
-    __syncthreads();
-
-    for(int stride = (blockDim.x * blockDim.y) / 2; stride > 0; stride >>= 1){
-        if(localIndex < stride){
-            blockReduction[localIndex] += blockReduction[localIndex + stride];
-        }
-        __syncthreads();
+    if(valid){
+        atomicAdd(&blockSum, updatedSpin);
     }
+    __syncthreads();
     if(localIndex == 0){
-        atomicAdd(magnetization, blockReduction[0]);
+        atomicAdd(magnetization, blockSum);
     }
 }
 
@@ -239,7 +238,7 @@ void blockSweepKernel(DataBlock* d, int blockSweeps, int n_blocks, int n_threads
     if(implementation == SharedMemory){
         dim3 threads(32, 16);
         dim3 blocks((d->subSize + threads.x - 1) / threads.x, (d->size + threads.y - 1) / threads.y);
-        size_t shmemBytes = (2 * (threads.x + 2) * (threads.y + 2) + threads.x * threads.y) * sizeof(int);
+        size_t shmemBytes = 2 * (threads.x + 2) * (threads.y + 2) * sizeof(int);
         cudaMemset(d->magnetization, 0, blockSweeps * sizeof(int));
         for(int s = 0; s < blockSweeps; s++){
             updateSublatticeSharedKernel<BC><<<blocks, threads, shmemBytes>>>(

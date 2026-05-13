@@ -46,10 +46,11 @@ void runSharedVsGlobalUpdateTest(int size){
     int threads1D = 256;
     int blocks1D = (subLen + threads1D - 1) / threads1D;
     initCurand<<<blocks1D, threads1D>>>(d_state_global, 42);
-    initCurand<<<blocks1D, threads1D>>>(d_state_shared, 42);
+    initCurand<<<blocks1D, threads1D>>>(d_state_shared, 1337);
     checkCuda(cudaGetLastError(), "initCurand launch failed");
     checkCuda(cudaDeviceSynchronize(), "initCurand execution failed");
 
+    // Deterministic acceptance table: only deltaE == 0 flips are accepted.
     float expTable[5] = {0.f, 0.f, 1.f, 0.f, 0.f};
     checkCuda(cudaMemcpyToSymbol(d_expTable, expTable, 5 * sizeof(float)), "copy exp table failed");
 
@@ -58,7 +59,7 @@ void runSharedVsGlobalUpdateTest(int size){
 
     dim3 threads2D(32, 16);
     dim3 blocks2D((subSize + threads2D.x - 1) / threads2D.x, (size + threads2D.y - 1) / threads2D.y);
-    size_t shmemBytes = (2 * (threads2D.x + 2) * (threads2D.y + 2) + threads2D.x * threads2D.y) * sizeof(int);
+    size_t shmemBytes = 2 * (threads2D.x + 2) * (threads2D.y + 2) * sizeof(int);
     int* d_mag = nullptr;
     checkCuda(cudaMalloc(&d_mag, sizeof(int)), "cudaMalloc d_mag failed");
     checkCuda(cudaMemset(d_mag, 0, sizeof(int)), "cudaMemset d_mag failed");
