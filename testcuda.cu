@@ -45,8 +45,9 @@ void runSharedVsGlobalUpdateTest(int size){
     checkCuda(cudaMalloc(&d_state_shared, subLen * sizeof(curandStatePhilox4_32_10_t)), "cudaMalloc d_state_shared failed");
     int threads1D = 256;
     int blocks1D = (subLen + threads1D - 1) / threads1D;
+    // Use identical RNG initialization so global vs shared kernels can be compared bit-for-bit.
     initCurand<<<blocks1D, threads1D>>>(d_state_global, 42);
-    initCurand<<<blocks1D, threads1D>>>(d_state_shared, 1337);
+    initCurand<<<blocks1D, threads1D>>>(d_state_shared, 42);
     checkCuda(cudaGetLastError(), "initCurand launch failed");
     checkCuda(cudaDeviceSynchronize(), "initCurand execution failed");
 
