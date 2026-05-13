@@ -94,6 +94,19 @@ __global__ void updateSublatticeKernel(int* subLattice, int* opponent, bool isWh
     }
 }
 
+__global__ void updateSharedSublatticeKernel(int* subLattice, int* opponent, bool isWhite, int size, int subSize, curandStatePhilox4_32_10_t *state){
+    extern __shared__ int shared[];
+    int* shSub = shared;
+    int* shOpp = shared + (blockDim.x + 2) * (blockDim.y + 2); //+2 for halo
+
+    int gx = blockIdx.x * blockDim.x + threadIdx.x;
+    int gy = blockIdx.y * blockDim.y + threadIdx.y;
+    int localIndex = threadIdx.y * blockDim.x + threadIdx.x;
+    int tileIndex = gy * subSize + gx;
+
+
+}
+
 __global__ void reduceMagnetizationKernel(const int* sublattice, int sublen, int* out){
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     int stride = blockDim.x * gridDim.x;
