@@ -5,14 +5,15 @@
 #include <fstream>
 #include <chrono>
 #include <ctime>
+#include <string>
 #include "ising_gpu.hpp"
 
 using namespace std;
 
 int main(int argc, char** argv){
 
-    if(argc != 4){ 
-        cerr << "Usage: " << argv[0] << " <grid_size> <temperature> <nsweeps>" << endl;
+    if(argc != 4 && argc != 5){ 
+        cerr << "Usage: " << argv[0] << " <grid_size> <temperature> <nsweeps> [obc|pbc]" << endl;
         return -1;
     }
     int size = stoi(argv[1]);
@@ -29,6 +30,29 @@ int main(int argc, char** argv){
     if (nsweeps <= 0) {
         cerr << "Number of sweeps must be positive." << endl;
         return -1;
+    }
+
+    bool obc = true;
+    if(argc == 5){
+        if(string(argv[4]) == "obc"){
+            obc = true;
+            cout << "Using open boundary conditions." << endl;
+        }
+        else if(string(argv[4]) == "pbc"){
+            obc = false;
+            cout << "Using periodic boundary conditions." << endl;
+            if((size & (size - 1)) != 0){
+                cerr << "Periodic boundary conditions require a power-of-two grid size." << endl;
+                return -1;
+            }
+        }
+        else{
+            cerr << "Invalid boundary condition. Use 'obc' or 'pbc'." << endl;
+            return -1;
+        }
+    }
+    else{
+        cout << "Using open boundary conditions." << endl;
     }
 
     int subSize = size/2; //numbers of columns for each sublattice
@@ -50,14 +74,22 @@ int main(int argc, char** argv){
     cout << "Launching kernel with " << nblocks << " blocks and " << nthreads << " threads per block." << endl;
     
     //init curand
-    curandState* d_state;
-    cudaMalloc(&d_state, nblocks * nthreads * sizeof(curandState));
+    curandStatePhilox4_32_10_t* d_state;
+    cudaMalloc(&d_state, nblocks * nthreads * sizeof(curandStatePhilox4_32_10_t));
     initCurand<<<nblocks, nthreads>>>(d_state, 42);
 
     //initialize sublattices on GPU
     initSublatticeKernel<<<nblocks, nthreads>>>(d_whites, subLen, d_state);
     initSublatticeKernel<<<nblocks, nthreads>>>(d_blacks, subLen, d_state);
     cudaDeviceSynchronize();
+
+    int deltaE[5] = {-8, -4, 0, 4, 8};
+    float expTable[5];
+    for(int i{0}; i<5; i++){
+        expTable[i] = exp(-(float)deltaE[i] / temp);
+    }
+    expTable[2] = 1.0f;
+    cudaMemcpyToSymbol(d_expTable, expTable, 5 * sizeof(float));
 
     auto end_init = std::chrono::high_resolution_clock::now();
     auto duration_init = std::chrono::duration_cast<std::chrono::microseconds>(end_init - start_init);
@@ -66,8 +98,14 @@ int main(int argc, char** argv){
     auto start = std::chrono::high_resolution_clock::now();
 
     for(int s{0}; s < nsweeps; s++){
-        updateSublatticeKernel<<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, temp, d_state);
-        updateSublatticeKernel<<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, temp, d_state);
+        if(obc){
+            updateSublatticeKernel<Open><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, d_state);
+            updateSublatticeKernel<Open><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, d_state);
+        }
+        else{
+            updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, d_state);
+            updateSublatticeKernel<Periodic><<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, d_state);
+        }
     }
     
     cudaDeviceSynchronize();

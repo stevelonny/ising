@@ -10,6 +10,9 @@ run.x: run.cu ising_gpu.hpp ising_cpu.hpp fmt/build/libfmt.a
 fmt/build/libfmt.a:
 	cd fmt && mkdir -p build && cd build && cmake .. && make && cd ../..
 
+bench_gpu_operation.x: bench_gpu_operation.cu ising_gpu.hpp fmt/build/libfmt.a
+	nvcc $(INCLUDE_FLAGS) -o bench_gpu_operation.x bench_gpu_operation.cu $(LIB_FLAGS) -diag-suppress=2417,128
+
 bench_gpu: bench_gpu.cu ising_gpu.hpp
 	nvcc -o bench_gpu.x bench_gpu.cu
 bench_cpu: bench_cpu.cpp ising_cpu.hpp
