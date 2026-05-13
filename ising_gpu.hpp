@@ -1,5 +1,6 @@
 #include <random>
 #include <cmath>
+#include <cuda_runtime.h>
 #include <curand_kernel.h>
 #include <thrust/device_ptr.h>
 #include <thrust/reduce.h>
@@ -28,6 +29,11 @@ struct DataBlock{//all pointers are device pointers
     double temp;
     curandStatePhilox4_32_10_t *state;
     int* magnetization;
+};
+
+enum UpdateImplementation{
+    GlobalMemory,
+    SharedMemory
 };
 
 __global__ void initCurand(curandStatePhilox4_32_10_t *state, unsigned long seed){
@@ -94,6 +100,103 @@ __global__ void updateSublatticeKernel(int* subLattice, int* opponent, bool isWh
     }
 }
 
+template<BoundaryCondition BC>
+__device__ inline int readWithBoundary(const int* lattice, int row, int col, int size, int subSize){
+    if(BC == Open){
+        if(row < 0 || row >= size || col < 0 || col >= subSize){
+            return 0;
+        }
+        return lattice[row * subSize + col];
+    }
+    int wrappedRow = row & (size - 1);
+    int wrappedCol = col & (subSize - 1);
+    return lattice[wrappedRow * subSize + wrappedCol];
+}
+
+template<BoundaryCondition BC>
+__global__ void updateSublatticeSharedKernel(int* subLattice, const int* opponent, bool isWhite, int size, int subSize, curandStatePhilox4_32_10_t *state, int* magnetization){
+    int gx = blockIdx.x * blockDim.x + threadIdx.x;
+    int gy = blockIdx.y * blockDim.y + threadIdx.y;
+    int lx = threadIdx.x + 1;
+    int ly = threadIdx.y + 1;
+    int tileWidth = blockDim.x + 2;
+    int localIndex = threadIdx.y * blockDim.x + threadIdx.x;
+    int tileIndex = ly * tileWidth + lx;
+    bool valid = (gy < size && gx < subSize);
+
+    extern __shared__ int shared[];
+    int* shSub = shared;
+    int* shOpp = shSub + (blockDim.x + 2) * (blockDim.y + 2);
+    __shared__ int blockReduction[32 * 16];
+
+    shSub[tileIndex] = readWithBoundary<BC>(subLattice, gy, gx, size, subSize);
+    shOpp[tileIndex] = readWithBoundary<BC>(opponent, gy, gx, size, subSize);
+
+    if(threadIdx.x == 0){
+        shSub[ly * tileWidth] = readWithBoundary<BC>(subLattice, gy, gx - 1, size, subSize);
+        shOpp[ly * tileWidth] = readWithBoundary<BC>(opponent, gy, gx - 1, size, subSize);
+    }
+    if(threadIdx.x == blockDim.x - 1){
+        shSub[ly * tileWidth + (blockDim.x + 1)] = readWithBoundary<BC>(subLattice, gy, gx + 1, size, subSize);
+        shOpp[ly * tileWidth + (blockDim.x + 1)] = readWithBoundary<BC>(opponent, gy, gx + 1, size, subSize);
+    }
+    if(threadIdx.y == 0){
+        shSub[lx] = readWithBoundary<BC>(subLattice, gy - 1, gx, size, subSize);
+        shOpp[lx] = readWithBoundary<BC>(opponent, gy - 1, gx, size, subSize);
+    }
+    if(threadIdx.y == blockDim.y - 1){
+        shSub[(blockDim.y + 1) * tileWidth + lx] = readWithBoundary<BC>(subLattice, gy + 1, gx, size, subSize);
+        shOpp[(blockDim.y + 1) * tileWidth + lx] = readWithBoundary<BC>(opponent, gy + 1, gx, size, subSize);
+    }
+    if(threadIdx.x == 0 && threadIdx.y == 0){
+        shSub[0] = readWithBoundary<BC>(subLattice, gy - 1, gx - 1, size, subSize);
+        shOpp[0] = readWithBoundary<BC>(opponent, gy - 1, gx - 1, size, subSize);
+    }
+    if(threadIdx.x == blockDim.x - 1 && threadIdx.y == 0){
+        shSub[blockDim.x + 1] = readWithBoundary<BC>(subLattice, gy - 1, gx + 1, size, subSize);
+        shOpp[blockDim.x + 1] = readWithBoundary<BC>(opponent, gy - 1, gx + 1, size, subSize);
+    }
+    if(threadIdx.x == 0 && threadIdx.y == blockDim.y - 1){
+        shSub[(blockDim.y + 1) * tileWidth] = readWithBoundary<BC>(subLattice, gy + 1, gx - 1, size, subSize);
+        shOpp[(blockDim.y + 1) * tileWidth] = readWithBoundary<BC>(opponent, gy + 1, gx - 1, size, subSize);
+    }
+    if(threadIdx.x == blockDim.x - 1 && threadIdx.y == blockDim.y - 1){
+        shSub[(blockDim.y + 1) * tileWidth + (blockDim.x + 1)] = readWithBoundary<BC>(subLattice, gy + 1, gx + 1, size, subSize);
+        shOpp[(blockDim.y + 1) * tileWidth + (blockDim.x + 1)] = readWithBoundary<BC>(opponent, gy + 1, gx + 1, size, subSize);
+    }
+    __syncthreads();
+
+    int updatedSpin = 0;
+    if(valid){
+        bool rowParity = (gy & 1) != 0;
+        if(isWhite){
+            rowParity = !rowParity;
+        }
+        int nearSum = shOpp[(ly - 1) * tileWidth + lx] + shOpp[(ly + 1) * tileWidth + lx] + shOpp[tileIndex]
+                    + (rowParity ? shOpp[ly * tileWidth + (lx - 1)] : shOpp[ly * tileWidth + (lx + 1)]);
+        int deltaE = 2 * shSub[tileIndex] * nearSum;
+        int exp_idx = (deltaE + 8) / 4;
+        int id = gy * subSize + gx;
+        float r = curand_uniform(&state[id]);
+        updatedSpin = (r < d_expTable[exp_idx]) ? -shSub[tileIndex] : shSub[tileIndex];
+        subLattice[id] = updatedSpin;
+        shSub[tileIndex] = updatedSpin;
+    }
+
+    blockReduction[localIndex] = valid ? updatedSpin : 0;
+    __syncthreads();
+
+    for(int stride = (blockDim.x * blockDim.y) / 2; stride > 0; stride >>= 1){
+        if(localIndex < stride){
+            blockReduction[localIndex] += blockReduction[localIndex + stride];
+        }
+        __syncthreads();
+    }
+    if(localIndex == 0){
+        atomicAdd(magnetization, blockReduction[0]);
+    }
+}
+
 __global__ void reduceMagnetizationKernel(const int* sublattice, int sublen, int* out){
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     int stride = blockDim.x * gridDim.x;
@@ -131,7 +234,20 @@ void reduceMagnetizationThrust(int* lattice, int lattLen, int* out){
 }
 
 template<BoundaryCondition BC>
-void blockSweepKernel(DataBlock* d, int blockSweeps, int n_blocks, int n_threads){
+void blockSweepKernel(DataBlock* d, int blockSweeps, int n_blocks, int n_threads, UpdateImplementation implementation = GlobalMemory){
+    if(implementation == SharedMemory){
+        dim3 threads(32, 16);
+        dim3 blocks((d->subSize + threads.x - 1) / threads.x, (d->size + threads.y - 1) / threads.y);
+        size_t shmemBytes = 2 * (threads.x + 2) * (threads.y + 2) * sizeof(int);
+        for(int s = 0; s < blockSweeps; s++){
+            cudaMemset(&d->magnetization[s], 0, sizeof(int));
+            updateSublatticeSharedKernel<BC><<<blocks, threads, shmemBytes>>>(
+                d->whites, d->blacks, true, d->size, d->subSize, d->state, &d->magnetization[s]);
+            updateSublatticeSharedKernel<BC><<<blocks, threads, shmemBytes>>>(
+                d->blacks, d->whites, false, d->size, d->subSize, d->state, &d->magnetization[s]);
+        }
+        return;
+    }
     for(int s = 0; s < blockSweeps; s++){
         updateSublatticeKernel<BC><<<n_blocks, n_threads>>>(
             d->whites, d->blacks, true, d->size, d->subSize, d->state);

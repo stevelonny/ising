@@ -1,108 +1,103 @@
-#include "isingcuda.hpp"
+#include "ising_gpu.hpp"
 #include <cuda_runtime.h>
+#include <cassert>
 #include <iostream>
-
-using namespace std;
+#include <vector>
 
 inline void checkCuda(cudaError_t err, const char* msg) {
     if (err != cudaSuccess) {
-        cerr << msg << ": " << cudaGetErrorString(err) << endl;
-        exit(-1);
+        std::cerr << msg << ": " << cudaGetErrorString(err) << std::endl;
+        std::exit(-1);
     }
 }
 
-
-
-int main(int argc, char** argv){
-
-    if(argc != 2){
-        cerr << "Usage: " << argv[0] << " <grid_size>" << endl;
-        return -1;
-    }
-    int size = stoi(argv[1]);
+template<BoundaryCondition BC>
+void runSharedVsGlobalUpdateTest(int size){
     int subSize = size / 2;
-    int subLen = size*subSize;
+    int subLen = size * subSize;
+    std::vector<int> h_whites(subLen);
+    std::vector<int> h_blacks(subLen);
+    for(int row = 0; row < size; row++){
+        for(int col = 0; col < subSize; col++){
+            int idx = row * subSize + col;
+            h_whites[idx] = ((row + col) % 3 == 0) ? 1 : -1;
+            h_blacks[idx] = ((2 * row + col) % 5 < 2) ? 1 : -1;
+        }
+    }
 
-    //prepare whites up blacks down
+    int* d_whites_global;
+    int* d_blacks_global;
+    int* d_whites_shared;
+    int* d_blacks_shared;
+    checkCuda(cudaMalloc(&d_whites_global, subLen * sizeof(int)), "cudaMalloc d_whites_global failed");
+    checkCuda(cudaMalloc(&d_blacks_global, subLen * sizeof(int)), "cudaMalloc d_blacks_global failed");
+    checkCuda(cudaMalloc(&d_whites_shared, subLen * sizeof(int)), "cudaMalloc d_whites_shared failed");
+    checkCuda(cudaMalloc(&d_blacks_shared, subLen * sizeof(int)), "cudaMalloc d_blacks_shared failed");
+    checkCuda(cudaMemcpy(d_whites_global, h_whites.data(), subLen * sizeof(int), cudaMemcpyHostToDevice), "copy whites global failed");
+    checkCuda(cudaMemcpy(d_blacks_global, h_blacks.data(), subLen * sizeof(int), cudaMemcpyHostToDevice), "copy blacks global failed");
+    checkCuda(cudaMemcpy(d_whites_shared, h_whites.data(), subLen * sizeof(int), cudaMemcpyHostToDevice), "copy whites shared failed");
+    checkCuda(cudaMemcpy(d_blacks_shared, h_blacks.data(), subLen * sizeof(int), cudaMemcpyHostToDevice), "copy blacks shared failed");
 
-    int* whites = new int[subLen];
-    int* blacks = new int[subLen];
+    curandStatePhilox4_32_10_t* d_state_global;
+    curandStatePhilox4_32_10_t* d_state_shared;
+    checkCuda(cudaMalloc(&d_state_global, subLen * sizeof(curandStatePhilox4_32_10_t)), "cudaMalloc d_state_global failed");
+    checkCuda(cudaMalloc(&d_state_shared, subLen * sizeof(curandStatePhilox4_32_10_t)), "cudaMalloc d_state_shared failed");
+    int threads1D = 256;
+    int blocks1D = (subLen + threads1D - 1) / threads1D;
+    initCurand<<<blocks1D, threads1D>>>(d_state_global, 42);
+    initCurand<<<blocks1D, threads1D>>>(d_state_shared, 42);
+    checkCuda(cudaGetLastError(), "initCurand launch failed");
+    checkCuda(cudaDeviceSynchronize(), "initCurand execution failed");
+
+    float expTable[5] = {0.f, 0.f, 1.f, 0.f, 0.f};
+    checkCuda(cudaMemcpyToSymbol(d_expTable, expTable, 5 * sizeof(float)), "copy exp table failed");
+
+    updateSublatticeKernel<BC><<<blocks1D, threads1D>>>(d_whites_global, d_blacks_global, true, size, subSize, d_state_global);
+    updateSublatticeKernel<BC><<<blocks1D, threads1D>>>(d_blacks_global, d_whites_global, false, size, subSize, d_state_global);
+
+    dim3 threads2D(32, 16);
+    dim3 blocks2D((subSize + threads2D.x - 1) / threads2D.x, (size + threads2D.y - 1) / threads2D.y);
+    size_t shmemBytes = 2 * (threads2D.x + 2) * (threads2D.y + 2) * sizeof(int);
+    int* d_mag = nullptr;
+    checkCuda(cudaMalloc(&d_mag, sizeof(int)), "cudaMalloc d_mag failed");
+    checkCuda(cudaMemset(d_mag, 0, sizeof(int)), "cudaMemset d_mag failed");
+    updateSublatticeSharedKernel<BC><<<blocks2D, threads2D, shmemBytes>>>(d_whites_shared, d_blacks_shared, true, size, subSize, d_state_shared, d_mag);
+    updateSublatticeSharedKernel<BC><<<blocks2D, threads2D, shmemBytes>>>(d_blacks_shared, d_whites_shared, false, size, subSize, d_state_shared, d_mag);
+    checkCuda(cudaGetLastError(), "update kernels launch failed");
+    checkCuda(cudaDeviceSynchronize(), "update kernels execution failed");
+
+    std::vector<int> h_whites_global(subLen), h_blacks_global(subLen);
+    std::vector<int> h_whites_shared(subLen), h_blacks_shared(subLen);
+    checkCuda(cudaMemcpy(h_whites_global.data(), d_whites_global, subLen * sizeof(int), cudaMemcpyDeviceToHost), "copy whites global back failed");
+    checkCuda(cudaMemcpy(h_blacks_global.data(), d_blacks_global, subLen * sizeof(int), cudaMemcpyDeviceToHost), "copy blacks global back failed");
+    checkCuda(cudaMemcpy(h_whites_shared.data(), d_whites_shared, subLen * sizeof(int), cudaMemcpyDeviceToHost), "copy whites shared back failed");
+    checkCuda(cudaMemcpy(h_blacks_shared.data(), d_blacks_shared, subLen * sizeof(int), cudaMemcpyDeviceToHost), "copy blacks shared back failed");
+
     for(int i = 0; i < subLen; i++){
-        whites[i] = 1;
-        blacks[i] = -1;
-    }
-    int* d_whites;
-    int* d_blacks;
-    checkCuda(cudaMalloc(&d_whites, subLen * sizeof(int)), "cudaMalloc d_whites failed");
-    checkCuda(cudaMalloc(&d_blacks, subLen * sizeof(int)), "cudaMalloc d_blacks failed");
-    checkCuda(cudaMemcpy(d_whites, whites, subLen * sizeof(int), cudaMemcpyHostToDevice), "copy whites to device failed");
-    checkCuda(cudaMemcpy(d_blacks, blacks, subLen * sizeof(int), cudaMemcpyHostToDevice), "copy blacks to device failed");
-
-    int nblocks = 1;
-    int nthreads = 512;
-
-    //initialize curand states
-    curandState* d_state;
-    checkCuda(cudaMalloc(&d_state, subLen * sizeof(curandState)), "cudaMalloc d_state failed");
-    
-    //low temp/botchered update to verify
-    double temp = 0.01;
-    
-    //test with different block/thread size
-    int nblocks_a[] = {1, 2, 4};
-    
-    for(int b{0}; b<3; b++){
-        int requestedBlocks = nblocks_a[b];
-        nblocks = requestedBlocks;
-        nthreads = (subLen + nblocks - 1) / nblocks;
-        if (nthreads > 1024) {
-            cout << "Requested " << nthreads << " threads per block exceeds limit. Adjusting..." << endl;
-            nthreads = 1024;
-            nblocks = (subLen + nthreads - 1) / nthreads;
-        }
-        initCurand<<<nblocks, nthreads>>>(d_state, 42);
-        checkCuda(cudaGetLastError(), "initCurand launch failed");
-        checkCuda(cudaDeviceSynchronize(), "initCurand execution failed");
-        cout << "testing with requested " << requestedBlocks << " blocks (actual " << nblocks << ") and " << nthreads << " threads" << endl;
-        for(int i = 0; i < subLen; i++){
-            whites[i] = 1;
-            blacks[i] = -1;
-        }
-        checkCuda(cudaMemcpy(d_whites, whites, subLen * sizeof(int), cudaMemcpyHostToDevice), "reset whites copy failed");
-        checkCuda(cudaMemcpy(d_blacks, blacks, subLen * sizeof(int), cudaMemcpyHostToDevice), "reset blacks copy failed");
-
-        updateSublatticeKernel<<<nblocks, nthreads>>>(d_whites, d_blacks, true, size, subSize, temp,  d_state);
-        checkCuda(cudaGetLastError(), "update white launch failed");
-        checkCuda(cudaDeviceSynchronize(), "update white execution failed");
-        checkCuda(cudaMemcpy(whites, d_whites, subLen * sizeof(int), cudaMemcpyDeviceToHost), "copy whites to host failed");
-        for(int i = 0; i < subLen; i++){
-            if(whites[i] != -1){
-                cerr << "found err white at index " << i << " " << whites[i] << endl;
-                return -1;
-            }
-        }
-
-        for(int i = 0; i < subLen; i++){
-            whites[i] = 1;
-        }
-        checkCuda(cudaMemcpy(d_whites, whites, subLen * sizeof(int), cudaMemcpyHostToDevice), "reset whites copy failed");
-        updateSublatticeKernel<<<nblocks, nthreads>>>(d_blacks, d_whites, false, size, subSize, temp, d_state);
-        checkCuda(cudaGetLastError(), "update black launch failed");
-        checkCuda(cudaDeviceSynchronize(), "update black execution failed");
-        checkCuda(cudaMemcpy(blacks, d_blacks, subLen * sizeof(int), cudaMemcpyDeviceToHost), "copy blacks to host failed");
-        for(int i = 0; i < subLen; i++){
-            if(blacks[i] != 1){
-                cerr << "found err black at index " << i << " " << blacks[i] << endl;
-                return -1;
-            }
-        }
+        assert(h_whites_global[i] == h_whites_shared[i]);
+        assert(h_blacks_global[i] == h_blacks_shared[i]);
     }
 
-    //cleanup
-    cudaFree(d_state);
-    cudaFree(d_whites);
-    cudaFree(d_blacks);
-    delete[] whites;
-    delete[] blacks;
+    int magShared = 0;
+    checkCuda(cudaMemcpy(&magShared, d_mag, sizeof(int), cudaMemcpyDeviceToHost), "copy mag failed");
+    int magHost = 0;
+    for(int i = 0; i < subLen; i++){
+        magHost += h_whites_shared[i] + h_blacks_shared[i];
+    }
+    assert(magShared == magHost);
+
+    cudaFree(d_mag);
+    cudaFree(d_state_global);
+    cudaFree(d_state_shared);
+    cudaFree(d_whites_global);
+    cudaFree(d_blacks_global);
+    cudaFree(d_whites_shared);
+    cudaFree(d_blacks_shared);
+}
+
+int main(){
+    runSharedVsGlobalUpdateTest<Open>(8);
+    runSharedVsGlobalUpdateTest<Periodic>(8);
+    std::cout << "Shared-memory update tests passed." << std::endl;
     return 0;
 }
