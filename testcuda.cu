@@ -20,6 +20,7 @@ void runSharedVsGlobalUpdateTest(int size){
     for(int row = 0; row < size; row++){
         for(int col = 0; col < subSize; col++){
             int idx = row * subSize + col;
+            // Use two different periodic integer patterns to build a mixed (non-uniform) spin state.
             h_whites[idx] = ((row + col) % 3 == 0) ? 1 : -1;
             h_blacks[idx] = ((2 * row + col) % 5 < 2) ? 1 : -1;
         }
@@ -57,7 +58,7 @@ void runSharedVsGlobalUpdateTest(int size){
 
     dim3 threads2D(32, 16);
     dim3 blocks2D((subSize + threads2D.x - 1) / threads2D.x, (size + threads2D.y - 1) / threads2D.y);
-    size_t shmemBytes = 2 * (threads2D.x + 2) * (threads2D.y + 2) * sizeof(int);
+    size_t shmemBytes = (2 * (threads2D.x + 2) * (threads2D.y + 2) + threads2D.x * threads2D.y) * sizeof(int);
     int* d_mag = nullptr;
     checkCuda(cudaMalloc(&d_mag, sizeof(int)), "cudaMalloc d_mag failed");
     checkCuda(cudaMemset(d_mag, 0, sizeof(int)), "cudaMemset d_mag failed");

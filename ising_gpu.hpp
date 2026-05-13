@@ -108,8 +108,10 @@ __device__ inline int readWithBoundary(const int* lattice, int row, int col, int
         }
         return lattice[row * subSize + col];
     }
-    int wrappedRow = row & (size - 1);
-    int wrappedCol = col & (subSize - 1);
+    bool sizePow2 = (size & (size - 1)) == 0;
+    bool subSizePow2 = (subSize & (subSize - 1)) == 0;
+    int wrappedRow = sizePow2 ? (row & (size - 1)) : ((row % size + size) % size);
+    int wrappedCol = subSizePow2 ? (col & (subSize - 1)) : ((col % subSize + subSize) % subSize);
     return lattice[wrappedRow * subSize + wrappedCol];
 }
 
@@ -127,7 +129,7 @@ __global__ void updateSublatticeSharedKernel(int* subLattice, const int* opponen
     extern __shared__ int shared[];
     int* shSub = shared;
     int* shOpp = shSub + (blockDim.x + 2) * (blockDim.y + 2);
-    __shared__ int blockReduction[32 * 16];
+    int* blockReduction = shOpp + (blockDim.x + 2) * (blockDim.y + 2);
 
     shSub[tileIndex] = readWithBoundary<BC>(subLattice, gy, gx, size, subSize);
     shOpp[tileIndex] = readWithBoundary<BC>(opponent, gy, gx, size, subSize);
@@ -238,7 +240,7 @@ void blockSweepKernel(DataBlock* d, int blockSweeps, int n_blocks, int n_threads
     if(implementation == SharedMemory){
         dim3 threads(32, 16);
         dim3 blocks((d->subSize + threads.x - 1) / threads.x, (d->size + threads.y - 1) / threads.y);
-        size_t shmemBytes = 2 * (threads.x + 2) * (threads.y + 2) * sizeof(int);
+        size_t shmemBytes = (2 * (threads.x + 2) * (threads.y + 2) + threads.x * threads.y) * sizeof(int);
         for(int s = 0; s < blockSweeps; s++){
             cudaMemset(&d->magnetization[s], 0, sizeof(int));
             updateSublatticeSharedKernel<BC><<<blocks, threads, shmemBytes>>>(
