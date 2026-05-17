@@ -43,7 +43,7 @@ int main(int argc, char** argv){
         fmt::print(stderr, "Invalid boundary condition. Use 'obc' or 'pbc'.\n");
         return -1;
     }
-    if(argc == 5){
+    if(argc == 6){
         fmt::println("Run tag: {}", argv[5]);
     }
     //run_tag used for distinguishing different runs, can be used in filename or just printed out
@@ -196,7 +196,7 @@ int main(int argc, char** argv){
     }
     d.magnetization = d_magnetization;
     //open fileout
-    string filename = fmt::format("size_{}_ns{}_bc_{}{}.dat", size, nsweeps, (obc ? "obc" : "pbc"), "_run" + run_tag);
+    string filename = fmt::format("size_{}_temp{:.2f}_ns{}_bc_{}{}.dat", size, temp, nsweeps, (obc ? "obc" : "pbc"), "_run" + run_tag);
     fmt::print("Saving to {}\n", filename);
     ofstream fileout;
     fileout.open(filename);
