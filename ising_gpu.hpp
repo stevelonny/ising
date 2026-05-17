@@ -39,12 +39,13 @@ struct DataBlock{//all pointers are device pointers
     int* magnetization;
 };
 
-#ifndef __INITIALIZE_KERNELS__
-#define __INITIALIZE_KERNELS__
+#ifndef __INITIALIZE_CURAND__
+#define __INITIALIZE_CURAND__
 __global__ void initCurand(curandStatePhilox4_32_10_t *state, unsigned long seed){
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     curand_init(seed, id, 0, &state[id]);
 }
+#endif
 
 __global__ void initSublatticeKernel(int* subLattice, int sublen, curandStatePhilox4_32_10_t *state){
     int id = threadIdx.x + blockIdx.x * blockDim.x;
@@ -52,7 +53,6 @@ __global__ void initSublatticeKernel(int* subLattice, int sublen, curandStatePhi
     float r = curand_uniform(&state[id]);
     subLattice[id] = (r < 0.5f) ? -1 : 1;
 }
-#endif
 
 template<BoundaryCondition BC>
 __device__ inline int getNeighbourSum(int* opponent, int index, int size, int subSize, bool isWhite){

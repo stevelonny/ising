@@ -31,20 +31,26 @@ struct DataBlockShared{//all pointers are device pointers
     int* magnetization;
 };
 
-#ifndef __INITIALIZE_KERNELS__
-#define __INITIALIZE_KERNELS__
+#ifndef __INITIALIZE_CURAND__
+#define __INITIALIZE_CURAND__
 __global__ void initCurand(curandStatePhilox4_32_10_t *state, unsigned long seed){
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     curand_init(seed, id, 0, &state[id]);
 }
-
-__global__ void initSublatticeKernel(int* lattice, int len, curandStatePhilox4_32_10_t *state){
-    int id = threadIdx.x + blockIdx.x * blockDim.x;
-    if(id >= len) return;
-    float r = curand_uniform(&state[id]);
-    lattice[id] = (r < 0.5f) ? -1 : 1;
-}
 #endif
+
+__global__ void initLatticeKernel(int* lattice, int len, curandStatePhilox4_32_10_t *state){
+    int id = threadIdx.x + blockIdx.x * blockDim.x;
+    if(id >= len / 2) return; //only subLen threads run this
+    
+    curandStatePhilox4_32_10_t localState = state[id];
+    
+    //initialize two spins per state to cover the whole lattice
+    lattice[id*2]     = (curand_uniform(&localState) < 0.5f) ? -1 : 1;
+    lattice[id*2 + 1] = (curand_uniform(&localState) < 0.5f) ? -1 : 1;
+    
+    state[id] = localState;
+}
 
 template<BoundaryCondition BC>
 __global__ void updateTileKernel(int* lattice, int size, int color, int n_TilesRow, curandStatePhilox4_32_10_t *state){
@@ -257,7 +263,7 @@ __global__ void updateTileKernel(int* lattice, int size, int color, int n_TilesR
         
         lattice[write_g_y * size + write_g_x] = s_tile_raw[(local_y + 1) * stride + (local_x + 1)];
     }
-
+    __syncthreads();
     /* reduction */
     int tMag = spin_w + spin_b;
     int* s_reduce = s_tile_raw;
@@ -297,8 +303,8 @@ void blockSweepKernelShared(DataBlockShared* d, int blockSweeps) {
             d->size, 
             0,
             n_TilesRow, 
-            d->state,
-            &d->magnetization[s]
+            &d->magnetization[s],
+            d->state
         );
         /* blue pass */        
         updateTileKernel<BC><<<grid, block, shared_mem_bytes>>>(
@@ -306,8 +312,8 @@ void blockSweepKernelShared(DataBlockShared* d, int blockSweeps) {
             d->size, 
             1,
             n_TilesRow, 
-            d->state,
-            &d->magnetization[s] 
+            &d->magnetization[s],
+            d->state
         );
     }
 }
