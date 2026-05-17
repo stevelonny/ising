@@ -17,8 +17,8 @@ bench_gpu: bench_gpu.cu ising_gpu.hpp
 	nvcc -o bench_gpu.x bench_gpu.cu
 bench_cpu: bench_cpu.cpp ising_cpu.hpp
 	g++ -o bench_cpu.x bench_cpu.cpp
-testcuda: testcuda.cu isingcuda.hpp
-	nvcc -o testcuda.x testcuda.cu
+testcuda: testcuda.cu ising_gpu.hpp ising_shared.hpp fmt/build/libfmt.a
+	nvcc $(INCLUDE_FLAGS) -o testcuda.x testcuda.cu $(LIB_FLAGS) -diag-suppress=2417,128
 clean:
 	rm -f *.x *.o
 clean-fmt:
