@@ -1,3 +1,6 @@
+#ifndef __ISING_GPU_HPP__
+#define __ISING_GPU_HPP__
+
 #include <random>
 #include <cmath>
 #include <curand_kernel.h>
@@ -9,13 +12,19 @@
 
 using namespace std;
 
+#ifndef __CONSTANT_D_EXPTABLE__
+#define __CONSTANT_D_EXPTABLE__
 __constant__ float d_expTable[5];
+#endif
 
+#ifndef __BOUNDARY_CONDITION__
+#define __BOUNDARY_CONDITION__
 enum BoundaryCondition{
     Open,
     Periodic
     //Fixed
 };
+#endif
 
 struct DataBlock{//all pointers are device pointers
     int* lattice;
@@ -30,10 +39,13 @@ struct DataBlock{//all pointers are device pointers
     int* magnetization;
 };
 
+#ifndef __INITIALIZE_CURAND__
+#define __INITIALIZE_CURAND__
 __global__ void initCurand(curandStatePhilox4_32_10_t *state, unsigned long seed){
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     curand_init(seed, id, 0, &state[id]);
 }
+#endif
 
 __global__ void initSublatticeKernel(int* subLattice, int sublen, curandStatePhilox4_32_10_t *state){
     int id = threadIdx.x + blockIdx.x * blockDim.x;
@@ -150,3 +162,5 @@ int* initSubLattice(int subLen, std::mt19937& gen){
     }
     return subLattice;
 }
+
+#endif // __ISING_GPU_HPP__
