@@ -294,11 +294,12 @@ __global__ void updateTileKernel(int* lattice, int size, int color, int n_TilesR
 }
 
 template<BoundaryCondition BC>
-__device__ void updateTile(int* lattice, int size, int color, int n_TilesRow, int* d_mag_sweep, curandStatePhilox4_32_10_t *state, int* s_tile_raw){
+__device__ void updateTile(int* lattice, int size, int color, int tile_id, int n_TilesRow, int* d_mag_sweep,  int* s_tile_raw, curandStatePhilox4_32_10_t *state){
     
     /* indexing */
     //tiling
-    int tile_id = blockIdx.x;
+    //int tile_id = blockIdx.x;
+    //now tile_id is passed
     int n_coloredTilesRow = n_TilesRow/2; 
     int tile_y = tile_id / (n_coloredTilesRow);
     int tile_rowHalf = tile_id % (n_coloredTilesRow);
@@ -415,7 +416,7 @@ __device__ void updateTile(int* lattice, int size, int color, int n_TilesRow, in
 }
 
 template<BoundaryCondition BC>
-__global__ void cooperativeUpdateTileKernel(DataBlockShared d, int blocksweeps){
+__global__ void cooperativeUpdateTileKernel(DataBlockShared d, int blocksweeps, int totalTilesPerColor){
     cg::grid_group grid = cg::this_grid();
     
     const int TILE_DIM_X = 16; 
@@ -424,11 +425,16 @@ __global__ void cooperativeUpdateTileKernel(DataBlockShared d, int blocksweeps){
     extern __shared__ int s_tile_raw[];
 
     for(int s{0}; s<blocksweeps; s++){
+        //each tile update will need to be strided
         /* red pass */
-        updateTile<BC>(d.lattice, d.size, 0, n_TilesRow, &d.magnetization[s], d.state, s_tile_raw);
+        for(int tile_id{blockIdx.x}; tile_id < totalTilesPerColor; tile_id += gridDim.x){
+            updateTile<BC>(d.lattice, d.size, 0, tile_id, n_TilesRow, &d.magnetization[s], s_tile_raw, d.state);
+        }
         grid.sync();
-        /* blue pass */        
-        updateTile<BC>(d.lattice, d.size, 1, n_TilesRow, &d.magnetization[s], d.state, s_tile_raw);
+        /* blue pass */
+        for(int tile_id{blockIdx.x}; tile_id < totalTilesPerColor; tile_id += gridDim.x){
+            updateTile<BC>(d.lattice, d.size, 1, tile_id, n_TilesRow, &d.magnetization[s], s_tile_raw, d.state);
+        }
         grid.sync();
     }
 
@@ -441,17 +447,36 @@ void launchCooperativeUpdateTileKernel(DataBlockShared* d, int blockSweeps){
     
     dim3 block(TILE_DIM_X/2, TILE_DIM_Y);     
     int n_TilesRow = d->size/TILE_DIM_X;    
-    int total_tiles = n_TilesRow * (d->size/TILE_DIM_Y);    
-    dim3 grid(total_tiles/2);
+    int total_tiles = n_TilesRow * (d->size/TILE_DIM_Y);
+    int totalTilesPerColor = total_tiles / 2;
+    //dim3 grid(total_tiles/2);
+    //dimension of the grid must be adjusted based on maximumn occupancy
     int tileWidth = TILE_DIM_X + 2;
     int tileHeight = TILE_DIM_Y + 2;
     size_t shared_mem_bytes = (tileWidth*tileHeight) * sizeof(int);
+
+    int numBlocksPerStreamingProcessor{0};
+    int numStreamingProcessors{0};
+
+    cudaDeviceGetAttribute(&numStreamingProcessors, cudaDevAttrMultiProcessorCount, 0);
+    cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        &numBlocksPerStreamingProcessor,
+        (const void*)cooperativeUpdateTileKernel<BC>,
+        block.x * block.y * block.z,
+        shared_mem_bytes
+    );
+
+    int maxBlocks = numBlocksPerStreamingProcessor * numStreamingProcessors;
+    //if the lattice is smaller, use less blocks
+    int activeBlocks = std::min(maxBlocks, totalTilesPerColor);
+    dim3 grid(activeBlocks);
 
     DataBlockShared d_val = *d;
 
     void* args[] = {
         &d_val,
-        &blockSweeps
+        &blockSweeps,
+        &totalTilesPerColor
     };
 
     checkCuda(cudaLaunchCooperativeKernel(
