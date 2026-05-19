@@ -140,7 +140,8 @@ int main(int argc, char** argv){
     }
     fmt::println("Data retrieval completed. Saving to file...");
     for(int i{0}; i<nsweeps; i++){
-        fileout << magnetization[i] << "\n";
+        //fileout << magnetization[i] << "\n";
+        fmt::println(fileout, "{}", magnetization[i]);
     }
     fileout.close();
     fmt::println("Data saved to file.");
