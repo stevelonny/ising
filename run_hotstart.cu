@@ -86,14 +86,15 @@ int main(int argc, char** argv){
     cudaMemcpyToSymbol(d_expTable, expTable, 5 * sizeof(float));
     /* thermalization */
     fmt::println("Thermalization phase");
+    int thermalSweeps{10000};
     if(obc){
-        for(int s{0}; s<500000; s++){
+        for(int s{0}; s<thermalSweeps; s++){
             updateTileKernel<Open><<<gridDim, blockDim, sharedMemSize>>>(d_lattice, size, 0, n_TilesRow, d_states);
             updateTileKernel<Open><<<gridDim, blockDim, sharedMemSize>>>(d_lattice, size, 1, n_TilesRow, d_states);
         }
     }
     else{
-        for(int s{0}; s<500000; s++){
+        for(int s{0}; s<thermalSweeps; s++){
             updateTileKernel<Periodic><<<gridDim, blockDim, sharedMemSize>>>(d_lattice, size, 0, n_TilesRow, d_states);
             updateTileKernel<Periodic><<<gridDim, blockDim, sharedMemSize>>>(d_lattice, size, 1, n_TilesRow, d_states);
         }
@@ -122,12 +123,16 @@ int main(int argc, char** argv){
 
     /* simulation/measure */
     fmt::println("Measurement phase");
+    auto start = std::chrono::high_resolution_clock::now();
     if(obc){
-        blockSweepKernelShared<Open>(&d, nsweeps);
+        launchCooperativeUpdateTileKernel<Open>(&d, nsweeps);
     }
     else{
-        blockSweepKernelShared<Periodic>(&d, nsweeps);
+        launchCooperativeUpdateTileKernel<Periodic>(&d, nsweeps);
     }
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+    fmt::println("Measurement completed in {} μs.", duration);
     fmt::println("Measurement completed. Retrieving data...");
     //retrieve d_magnetization
     if(cudaMemcpy(magnetization, d.magnetization, nsweeps * sizeof(int), cudaMemcpyDeviceToHost) != cudaSuccess) {

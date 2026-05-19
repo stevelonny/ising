@@ -88,7 +88,7 @@ int main(int argc, char** argv){
     int* d_magnetization;
     cudaMalloc(&d_magnetization, window_size * sizeof(int));
     cudaMemset(d_magnetization, 0, window_size * sizeof(int));
-    int* magnetization = new int[max(nsweeps, window_size)];
+    int* magnetization = new int[window_size];
 
     /* annealing */
     if(true/* obc */){ //temperature annealing schedule: cool from high T to target over 1000 sweeps
@@ -178,6 +178,8 @@ int main(int argc, char** argv){
     fmt::println("Final thermalization: {}", (is_thermalized ? "SUCCESS" : "INCOMPLETE"));
     
     /* interlude */
+    delete[] magnetization;
+    magnetization = new int[nsweeps];
     cudaFree(d_magnetization);
     DataBlockShared d;
     d.lattice = d_lattice;
@@ -188,8 +190,8 @@ int main(int argc, char** argv){
     d.state = d_states;
     d.temp = temp;
     
-    cudaMalloc(&d.magnetization, nsweeps * sizeof(int));
-    cudaMemset(d.magnetization, 0, nsweeps * sizeof(int));
+    checkCuda(cudaMalloc(&d.magnetization, nsweeps * sizeof(int)), "Failed to allocate magnetization on device");
+    checkCuda(cudaMemset(d.magnetization, 0, nsweeps * sizeof(int)), "Failed to memset magnetization");
     //open fileout
     string filename = fmt::format("size_{}_temp{:.2f}_ns{}_bc_{}{}.dat", size, temp, nsweeps, (obc ? "obc" : "pbc"), "_run" + run_tag);
     fmt::print("Saving to {}\n", filename);
@@ -199,14 +201,14 @@ int main(int argc, char** argv){
     /* simulation/measure */
     fmt::println("Measurement phase");
     if(obc){
-        blockSweepKernelShared<Open>(&d, nsweeps);
+        launchCooperativeUpdateTileKernel<Open>(&d, nsweeps);
     }
     else{
-        blockSweepKernelShared<Periodic>(&d, nsweeps);
+        launchCooperativeUpdateTileKernel<Periodic>(&d, nsweeps);
     }
     fmt::println("Measurement completed. Retrieving data...");
     //retrieve d_magnetization
-    cudaMemcpy(magnetization, d.magnetization, nsweeps * sizeof(int), cudaMemcpyDeviceToHost);
+    checkCuda(cudaMemcpy(magnetization, d.magnetization, nsweeps * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy magnetization from device to host");
     fmt::println("Data retrieval completed. Saving to file...");
     for(int i{0}; i<nsweeps; i++){
         fileout << magnetization[i] << "\n";
