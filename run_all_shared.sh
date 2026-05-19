@@ -14,22 +14,23 @@ NUM_RUNS=5  # Number of independent experiments per temp/size
 
 # Lattice sizes represented as powers of 2
 POWERS=(9 10)
+TEMPS=$(seq 2.18 0.01 2.30)
 
 echo "Starting Ensemble Grid Sweep..."
 echo "Sweeps: $NSWEEPS | BC: $BC"
 echo "Lattices: L = 2^${POWERS[*]}"
-echo "Target window: T in [2.18, 2.30]"
+echo "Target window: ${TEMPS}"
 echo "Independent runs per configuration: $NUM_RUNS"
 echo "=========================================="
 
 # 1. Loop for multiple independent runs FIRST
 for ((run=1; run<=NUM_RUNS; run++)); do
-    TAG="prod_run${run}"
+    TAG="therm_${run}"
     echo "=========================================="
     echo "Starting Full Temperature Sweep for Run ${run}/${NUM_RUNS}..."
     
     # 2. Loop over temperatures
-    for t in $(seq 2.15 0.01 2.30); do
+    for t in $TEMPS; do
         formatted_temp=$(printf "%.2f" $t)
         
         # 3. Loop over each lattice size

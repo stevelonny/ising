@@ -8,7 +8,7 @@
 #include <fmt/format.h>
 #include <fmt/ostream.h>
 
-#define MAX_SWEEPS 10000
+#define MAX_SWEEPS 500000
 
 int main(int argc, char** argv){
     if(argc != 5 && argc != 6){ 
@@ -84,7 +84,7 @@ int main(int argc, char** argv){
 
     int sweep{0};
     int index{0};
-    int window_size{500};
+    int window_size{10000};
     int* d_magnetization;
     cudaMalloc(&d_magnetization, window_size * sizeof(int));
     cudaMemset(d_magnetization, 0, window_size * sizeof(int));
@@ -188,13 +188,8 @@ int main(int argc, char** argv){
     d.state = d_states;
     d.temp = temp;
     
-    if(cudaMalloc(&d_magnetization, nsweeps * sizeof(int)) != cudaSuccess) {
-        fmt::print(stderr, "cudaMalloc failed!\n");
-    }
-    if(cudaMemset(d_magnetization, 0, nsweeps * sizeof(int)) != cudaSuccess) {
-        fmt::print(stderr, "cudaMemset failed!\n");
-    }
-    d.magnetization = d_magnetization;
+    cudaMalloc(&d.magnetization, nsweeps * sizeof(int));
+    cudaMemset(d.magnetization, 0, nsweeps * sizeof(int));
     //open fileout
     string filename = fmt::format("size_{}_temp{:.2f}_ns{}_bc_{}{}.dat", size, temp, nsweeps, (obc ? "obc" : "pbc"), "_run" + run_tag);
     fmt::print("Saving to {}\n", filename);
@@ -211,9 +206,7 @@ int main(int argc, char** argv){
     }
     fmt::println("Measurement completed. Retrieving data...");
     //retrieve d_magnetization
-    if(cudaMemcpy(magnetization, d_magnetization, nsweeps * sizeof(int), cudaMemcpyDeviceToHost) != cudaSuccess) {
-        fmt::print(stderr, "cudaMemcpy failed!\n");
-    }
+    cudaMemcpy(magnetization, d.magnetization, nsweeps * sizeof(int), cudaMemcpyDeviceToHost);
     fmt::println("Data retrieval completed. Saving to file...");
     for(int i{0}; i<nsweeps; i++){
         fileout << magnetization[i] << "\n";
