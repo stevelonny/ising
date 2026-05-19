@@ -2,8 +2,11 @@
 #include <iostream>
 #include <fstream>
 #include <chrono>
+#include <algorithm>
 #include <vector>
 #include <cmath>
+#include <stdexcept>
+#include <string>
 #include <random>
 #include <iomanip>
 #include "ising_gpu.hpp"
@@ -147,8 +150,9 @@ void blockSweepKernelSharedNoMag(int* d_lattice, int size, int blockSweeps) {
     size_t shared_mem_bytes = (tileWidth*tileHeight) * sizeof(int);
 
     curandStatePhilox4_32_10_t *d_state;
-    cudaMalloc(&d_state, grid.x * block.x * block.y * sizeof(curandStatePhilox4_32_10_t));
-    initCurand<<<(grid.x * block.x * block.y + 255) / 256, 256>>>(d_state, 42);
+    int tileStateCount = size * (size/2);
+    cudaMalloc(&d_state, tileStateCount * sizeof(curandStatePhilox4_32_10_t));
+    initCurand<<<(tileStateCount + 255) / 256, 256>>>(d_state, 42);
 
     for(int s{0}; s<blockSweeps; s++){
         /* red pass */
@@ -193,242 +197,247 @@ void blockSweepKernelSharedWithMag(DataBlockShared* d, int blockSweeps) {
 // BENCHMARK RUNNER
 // ============================================================================
 
-int main(int argc, char** argv){
-    if(argc < 2) {
-        cerr << "Usage: " << argv[0] << " <output_file> [verbose]" << endl;
-        return -1;
-    }
+template<BoundaryCondition BC>
+void runGlobalBenchmark(int size, int sweeps, int repeats, bool withMag, bool verbose){
+    const long long total_updates = (long long)size * (long long)size * (long long)sweeps;
+    const int subLen = size * (size / 2);
+    const int nthreads = (subLen > 1024) ? 1024 : subLen;
+    const int nblocks = (subLen + nthreads - 1) / nthreads;
 
-    string output_file = argv[1];
-    bool verbose = (argc > 2 && string(argv[2]) == "verbose");
-
-    vector<int> lattice_sizes = {32, 64, 128, 256, 512, 1024, 2048, 4096, 8192};
-    int num_sweeps = 512;
-    double temperature = 2.269; // critical temperature
-    
-    // Set up exponential table for temperature
-    int deltaE[5] = {-8, -4, 0, 4, 8};
-    float expTable[5];
-    for(int i{0}; i<5; i++){
-        expTable[i] = exp(-(float)deltaE[i] / temperature);
-    }
-    expTable[2] = 1.0f;
-    cudaMemcpyToSymbol(d_expTable, expTable, 5 * sizeof(float));
-
-    ofstream outFile(output_file);
-    outFile << "implementation,magnetization,size,sweeps,time_ms,throughput_updates_us,time_per_sweep_us" << endl;
-
-    for(int size : lattice_sizes) {
-        if(verbose) cout << "Benchmarking size " << size << "..." << endl;
-        
-        int Len = size * size;
-        long long total_updates = (long long)Len * num_sweeps;
-
-        // ====================================================================
-        // GPU GLOBAL MEMORY - WITHOUT MAG
-        // ====================================================================
-        {
-            if(verbose) cout << "  GPU (global) - no magnetization..." << endl;
-            
-            int subLen = size * (size/2);
-            int nthreads = subLen;
-            if(subLen > 1024) nthreads = 1024;
-            int nblocks = (subLen + nthreads - 1) / nthreads;
-
-            int* d_lattice;
-            cudaMalloc(&d_lattice, Len * sizeof(int));
-            int* d_whites = d_lattice;
-            int* d_blacks = d_lattice + subLen;
-
-            curandStatePhilox4_32_10_t* d_state;
-            cudaMalloc(&d_state, nblocks * nthreads * sizeof(curandStatePhilox4_32_10_t));
-            initCurand<<<nblocks, nthreads>>>(d_state, 42);
-
-            initSublatticeKernel<<<nblocks, nthreads>>>(d_whites, subLen, d_state);
-            initSublatticeKernel<<<nblocks, nthreads>>>(d_blacks, subLen, d_state);
-            cudaDeviceSynchronize();
-
-            DataBlock d;
-            d.lattice = d_lattice;
-            d.whites = d_whites;
-            d.blacks = d_blacks;
-            d.size = size;
-            d.Len = Len;
-            d.subLen = subLen;
-            d.subSize = size/2;
-            d.temp = temperature;
-            d.state = d_state;
-            d.magnetization = nullptr;
-
-            auto start = chrono::high_resolution_clock::now();
-            blockSweepKernelGPUNoMag<Periodic>(&d, num_sweeps, nblocks, nthreads);
-            cudaDeviceSynchronize();
-            auto end = chrono::high_resolution_clock::now();
-            auto duration_us = chrono::duration_cast<chrono::microseconds>(end - start);
-
-            double time_ms = duration_us.count() / 1000.0;
-            double throughput = total_updates / (double)duration_us.count();
-            double time_per_sweep = duration_us.count() / (double)num_sweeps;
-
-            outFile << "GPU_Global,No," << size << "," << num_sweeps << ","
-                    << fixed << setprecision(3) << time_ms << ","
-                    << throughput << "," << time_per_sweep << endl;
-
-            cudaFree(d_lattice);
-            cudaFree(d_state);
+    for(int repeat = 0; repeat < repeats; ++repeat){
+        if(verbose){
+            cerr << "  GPU (global) repeat " << repeat << (withMag ? " with mag" : " no mag") << endl;
         }
 
-        // ====================================================================
-        // GPU GLOBAL MEMORY - WITH MAG
-        // ====================================================================
-        {
-            if(verbose) cout << "  GPU (global) - with magnetization..." << endl;
-            
-            int subLen = size * (size/2);
-            int nthreads = subLen;
-            if(subLen > 1024) nthreads = 1024;
-            int nblocks = (subLen + nthreads - 1) / nthreads;
+        int* d_lattice = nullptr;
+        checkCuda(cudaMalloc(&d_lattice, (long long)size * size * sizeof(int)), "cudaMalloc d_lattice failed");
+        int* d_whites = d_lattice;
+        int* d_blacks = d_lattice + subLen;
 
-            int* d_lattice;
-            cudaMalloc(&d_lattice, Len * sizeof(int));
-            int* d_whites = d_lattice;
-            int* d_blacks = d_lattice + subLen;
+        curandStatePhilox4_32_10_t* d_state = nullptr;
+        checkCuda(cudaMalloc(&d_state, subLen * sizeof(curandStatePhilox4_32_10_t)), "cudaMalloc d_state failed");
+        initCurand<<<nblocks, nthreads>>>(d_state, 42 + repeat);
+        checkCuda(cudaGetLastError(), "initCurand launch failed");
 
-            curandStatePhilox4_32_10_t* d_state;
-            cudaMalloc(&d_state, nblocks * nthreads * sizeof(curandStatePhilox4_32_10_t));
-            initCurand<<<nblocks, nthreads>>>(d_state, 42);
+        initSublatticeKernel<<<nblocks, nthreads>>>(d_whites, subLen, d_state);
+        checkCuda(cudaGetLastError(), "initSublatticeKernel whites launch failed");
+        initSublatticeKernel<<<nblocks, nthreads>>>(d_blacks, subLen, d_state);
+        checkCuda(cudaGetLastError(), "initSublatticeKernel blacks launch failed");
+        checkCuda(cudaDeviceSynchronize(), "init lattice execution failed");
 
-            initSublatticeKernel<<<nblocks, nthreads>>>(d_whites, subLen, d_state);
-            initSublatticeKernel<<<nblocks, nthreads>>>(d_blacks, subLen, d_state);
+        int* d_magnetization = nullptr;
+        DataBlock d;
+        d.lattice = d_lattice;
+        d.whites = d_whites;
+        d.blacks = d_blacks;
+        d.size = size;
+        d.Len = size * size;
+        d.subLen = subLen;
+        d.subSize = size / 2;
+        d.temp = 2.269;
+        d.state = d_state;
+        d.magnetization = nullptr;
 
-            int* d_magnetization;
-            cudaMalloc(&d_magnetization, num_sweeps * sizeof(int));
-            cudaMemset(d_magnetization, 0, num_sweeps * sizeof(int));
-
-            cudaDeviceSynchronize();
-
-            DataBlock d;
-            d.lattice = d_lattice;
-            d.whites = d_whites;
-            d.blacks = d_blacks;
-            d.size = size;
-            d.Len = Len;
-            d.subLen = subLen;
-            d.subSize = size/2;
-            d.temp = temperature;
-            d.state = d_state;
+        if(withMag){
+            checkCuda(cudaMalloc(&d_magnetization, sweeps * sizeof(int)), "cudaMalloc d_magnetization failed");
+            checkCuda(cudaMemset(d_magnetization, 0, sweeps * sizeof(int)), "cudaMemset d_magnetization failed");
             d.magnetization = d_magnetization;
-
-            auto start = chrono::high_resolution_clock::now();
-            blockSweepKernelGPUWithMag<Periodic>(&d, num_sweeps, nblocks, nthreads);
-            cudaDeviceSynchronize();
-            auto end = chrono::high_resolution_clock::now();
-            auto duration_us = chrono::duration_cast<chrono::microseconds>(end - start);
-
-            double time_ms = duration_us.count() / 1000.0;
-            double throughput = total_updates / (double)duration_us.count();
-            double time_per_sweep = duration_us.count() / (double)num_sweeps;
-
-            outFile << "GPU_Global,Yes," << size << "," << num_sweeps << ","
-                    << fixed << setprecision(3) << time_ms << ","
-                    << throughput << "," << time_per_sweep << endl;
-
-            cudaFree(d_lattice);
-            cudaFree(d_state);
-            cudaFree(d_magnetization);
         }
 
-        // ====================================================================
-        // SHARED MEMORY - WITHOUT MAG
-        // ====================================================================
-        {
-            if(verbose) cout << "  Shared memory - no magnetization..." << endl;
-            
-            int* d_lattice;
-            cudaMalloc(&d_lattice, Len * sizeof(int));
+        auto start = chrono::high_resolution_clock::now();
+        if(withMag){
+            blockSweepKernelGPUWithMag<BC>(&d, sweeps, nblocks, nthreads);
+        } else {
+            blockSweepKernelGPUNoMag<BC>(&d, sweeps, nblocks, nthreads);
+        }
+        checkCuda(cudaGetLastError(), "global benchmark kernel launch failed");
+        checkCuda(cudaDeviceSynchronize(), "global benchmark execution failed");
+        auto end = chrono::high_resolution_clock::now();
 
-            curandStatePhilox4_32_10_t* d_state_init;
-            cudaMalloc(&d_state_init, 1024 * sizeof(curandStatePhilox4_32_10_t));
-            initCurand<<<4, 256>>>(d_state_init, 42);
-            
-            initSublatticeKernel<<<(Len + 255) / 256, 256>>>(d_lattice, Len, d_state_init);
-            cudaDeviceSynchronize();
-            cudaFree(d_state_init);
+        auto duration_us = chrono::duration_cast<chrono::microseconds>(end - start);
+        double time_ms = duration_us.count() / 1000.0;
+        double throughput = total_updates / (double)duration_us.count();
+        double time_per_sweep = duration_us.count() / (double)sweeps;
 
-            auto start = chrono::high_resolution_clock::now();
-            blockSweepKernelSharedNoMag<Periodic>(d_lattice, size, num_sweeps);
-            cudaDeviceSynchronize();
-            auto end = chrono::high_resolution_clock::now();
-            auto duration_us = chrono::duration_cast<chrono::microseconds>(end - start);
+        cout << "GPU_Global," << (withMag ? "Yes" : "No") << "," << size << "," << sweeps << "," << repeat << ","
+             << fixed << setprecision(3) << time_ms << "," << throughput << "," << time_per_sweep << "," << "Periodic" << '\n';
 
-            double time_ms = duration_us.count() / 1000.0;
-            double throughput = total_updates / (double)duration_us.count();
-            double time_per_sweep = duration_us.count() / (double)num_sweeps;
+        cudaFree(d_lattice);
+        cudaFree(d_state);
+        if(d_magnetization){ cudaFree(d_magnetization); }
+    }
+}
 
-            outFile << "Shared_Memory,No," << size << "," << num_sweeps << ","
-                    << fixed << setprecision(3) << time_ms << ","
-                    << throughput << "," << time_per_sweep << endl;
+template<BoundaryCondition BC>
+void runSharedBenchmark(int size, int sweeps, int repeats, bool withMag, bool cooperative, bool verbose){
+    const int TILE_DIM_X = 16;
+    const int TILE_DIM_Y = 16;
+    const int Len = size * size;
+    const int subLen = size * (size / 2);
+    const long long total_updates = (long long)Len * (long long)sweeps;
+    const int tileStateCount = Len / 2;
+    const int nthreads = (tileStateCount > 256) ? 256 : tileStateCount;
+    const int nblocks = (tileStateCount + nthreads - 1) / nthreads;
 
-            cudaFree(d_lattice);
+    for(int repeat = 0; repeat < repeats; ++repeat){
+        if(verbose){
+            cerr << "  Shared " << (cooperative ? "(cooperative)" : "(tile)")
+                 << " repeat " << repeat << (withMag ? " with mag" : " no mag") << endl;
         }
 
-        // ====================================================================
-        // SHARED MEMORY - WITH MAG
-        // ====================================================================
-        {
-            if(verbose) cout << "  Shared memory - with magnetization..." << endl;
-            
-            int* d_lattice;
-            cudaMalloc(&d_lattice, Len * sizeof(int));
+        int* d_lattice = nullptr;
+        checkCuda(cudaMalloc(&d_lattice, Len * sizeof(int)), "cudaMalloc d_lattice failed");
 
-            curandStatePhilox4_32_10_t* d_state_init;
-            cudaMalloc(&d_state_init, 1024 * sizeof(curandStatePhilox4_32_10_t));
-            initCurand<<<4, 256>>>(d_state_init, 42);
-            
-            initSublatticeKernel<<<(Len + 255) / 256, 256>>>(d_lattice, Len, d_state_init);
-            cudaDeviceSynchronize();
-            cudaFree(d_state_init);
+        curandStatePhilox4_32_10_t* d_state_init = nullptr;
+        checkCuda(cudaMalloc(&d_state_init, tileStateCount * sizeof(curandStatePhilox4_32_10_t)), "cudaMalloc d_state_init failed");
+        initCurand<<<nblocks, nthreads>>>(d_state_init, 42 + repeat);
+        checkCuda(cudaGetLastError(), "initCurand for lattice failed");
+        checkCuda(cudaDeviceSynchronize(), "init lattice state execution failed");
 
-            curandStatePhilox4_32_10_t* d_state;
-            int n_states = 256;
-            cudaMalloc(&d_state, n_states * sizeof(curandStatePhilox4_32_10_t));
-            initCurand<<<1, 256>>>(d_state, 42);
+        initLatticeKernel<<<nblocks, nthreads>>>(d_lattice, Len, d_state_init);
+        checkCuda(cudaGetLastError(), "initLatticeKernel failed");
+        checkCuda(cudaDeviceSynchronize(), "lattice init execution failed");
+        cudaFree(d_state_init);
 
-            int* d_magnetization;
-            cudaMalloc(&d_magnetization, num_sweeps * sizeof(int));
-            cudaMemset(d_magnetization, 0, num_sweeps * sizeof(int));
+        int tileWidth = TILE_DIM_X + 2;
+        int tileHeight = TILE_DIM_Y + 2;
+        size_t shared_mem_bytes = (tileWidth * tileHeight) * sizeof(int);
+        dim3 block(TILE_DIM_X/2, TILE_DIM_Y);
+        int n_TilesRow = size / TILE_DIM_X;
+        int total_tiles = n_TilesRow * (size / TILE_DIM_Y);
+        int totalTilesPerColor = total_tiles / 2;
+        dim3 grid(totalTilesPerColor);
 
-            cudaDeviceSynchronize();
+        curandStatePhilox4_32_10_t* d_state = nullptr;
+        if(withMag || cooperative){
+            checkCuda(cudaMalloc(&d_state, tileStateCount * sizeof(curandStatePhilox4_32_10_t)), "cudaMalloc d_state failed");
+            initCurand<<<nblocks, nthreads>>>(d_state, 4242 + repeat);
+            checkCuda(cudaGetLastError(), "initCurand for shared failed");
+            checkCuda(cudaDeviceSynchronize(), "shared state init execution failed");
+        }
 
+        int* d_magnetization = nullptr;
+        if(withMag){
+            checkCuda(cudaMalloc(&d_magnetization, sweeps * sizeof(int)), "cudaMalloc d_magnetization failed");
+            checkCuda(cudaMemset(d_magnetization, 0, sweeps * sizeof(int)), "cudaMemset d_magnetization failed");
+        }
+
+        auto start = chrono::high_resolution_clock::now();
+        if(cooperative){
             DataBlockShared d;
             d.lattice = d_lattice;
             d.size = size;
             d.Len = Len;
+            d.subLen = subLen;
+            d.subSize = size / 2;
+            d.temp = 2.269;
             d.state = d_state;
             d.magnetization = d_magnetization;
-
-            auto start = chrono::high_resolution_clock::now();
-            blockSweepKernelSharedWithMag<Periodic>(&d, num_sweeps);
-            cudaDeviceSynchronize();
-            auto end = chrono::high_resolution_clock::now();
-            auto duration_us = chrono::duration_cast<chrono::microseconds>(end - start);
-
-            double time_ms = duration_us.count() / 1000.0;
-            double throughput = total_updates / (double)duration_us.count();
-            double time_per_sweep = duration_us.count() / (double)num_sweeps;
-
-            outFile << "Shared_Memory,Yes," << size << "," << num_sweeps << ","
-                    << fixed << setprecision(3) << time_ms << ","
-                    << throughput << "," << time_per_sweep << endl;
-
-            cudaFree(d_lattice);
-            cudaFree(d_state);
-            cudaFree(d_magnetization);
+            launchCooperativeUpdateTileKernel<BC>(&d, sweeps);
+        } else if(withMag){
+            DataBlockShared d;
+            d.lattice = d_lattice;
+            d.size = size;
+            d.Len = Len;
+            d.subLen = subLen;
+            d.subSize = size / 2;
+            d.temp = 2.269;
+            d.state = d_state;
+            d.magnetization = d_magnetization;
+            blockSweepKernelSharedWithMag<BC>(&d, sweeps);
+        } else {
+            blockSweepKernelSharedNoMag<BC>(d_lattice, size, sweeps);
         }
+        checkCuda(cudaGetLastError(), "shared benchmark launch failed");
+        checkCuda(cudaDeviceSynchronize(), "shared benchmark execution failed");
+        auto end = chrono::high_resolution_clock::now();
+
+        auto duration_us = chrono::duration_cast<chrono::microseconds>(end - start);
+        double time_ms = duration_us.count() / 1000.0;
+        double throughput = total_updates / (double)duration_us.count();
+        double time_per_sweep = duration_us.count() / (double)sweeps;
+
+        cout << (cooperative ? "shared_cooperative" : "Shared_Memory") << "," << (withMag ? "Yes" : "No")
+             << "," << size << "," << sweeps << "," << repeat << "," << fixed << setprecision(3) << time_ms
+             << "," << throughput << "," << time_per_sweep << "," << "Periodic" << '\n';
+
+        cudaFree(d_lattice);
+        if(d_state){ cudaFree(d_state); }
+        if(d_magnetization){ cudaFree(d_magnetization); }
+    }
+}
+
+int main(int argc, char** argv){
+    vector<string> args(argv + 1, argv + argc);
+    auto require_value = [&](const string& key) -> string {
+        for(size_t i = 0; i + 1 < args.size(); ++i){
+            if(args[i] == key){
+                return args[i + 1];
+            }
+        }
+        throw runtime_error("Missing required argument: " + key);
+    };
+
+    if(args.empty() || find(args.begin(), args.end(), "--help") != args.end()){
+        cerr << "Usage: " << argv[0]
+             << " --impl <global|shared|shared_cooperative> --bc <Periodic|Open> --size <n> --sweeps <n> --mag <0|1> --repeats <n> [--verbose]" << endl;
+        return args.empty() ? -1 : 0;
     }
 
-    outFile.close();
-    if(verbose) cout << "Benchmark complete. Results written to " << output_file << endl;
+    string impl = require_value("--impl");
+    string bc = require_value("--bc");
+    int size = stoi(require_value("--size"));
+    int sweeps = stoi(require_value("--sweeps"));
+    bool mag = stoi(require_value("--mag")) != 0;
+    int repeats = stoi(require_value("--repeats"));
+    bool verbose = find(args.begin(), args.end(), "--verbose") != args.end();
+
+    if(size <= 0 || sweeps <= 0 || repeats <= 0){
+        cerr << "size, sweeps, and repeats must be positive" << endl;
+        return -1;
+    }
+    if(impl == "shared_cooperative" && !mag){
+        cerr << "shared_cooperative requires --mag 1" << endl;
+        return -1;
+    }
+
+    int deltaE[5] = {-8, -4, 0, 4, 8};
+    float expTable[5];
+    double temperature = 2.269;
+    for(int i = 0; i < 5; ++i){
+        expTable[i] = exp(-(float)deltaE[i] / temperature);
+    }
+    expTable[2] = 1.0f;
+    checkCuda(cudaMemcpyToSymbol(d_expTable, expTable, 5 * sizeof(float)), "copy expTable failed");
+
+    cout << "implementation,magnetization,size,sweeps,repeat,time_ms,throughput_updates_us,time_per_sweep_us,bc" << '\n';
+
+    if(bc == "Periodic" || bc == "pbc"){
+        if(impl == "global"){
+            runGlobalBenchmark<Periodic>(size, sweeps, repeats, mag, verbose);
+        } else if(impl == "shared"){
+            runSharedBenchmark<Periodic>(size, sweeps, repeats, mag, false, verbose);
+        } else if(impl == "shared_cooperative"){
+            runSharedBenchmark<Periodic>(size, sweeps, repeats, true, true, verbose);
+        } else {
+            cerr << "Unknown impl: " << impl << endl;
+            return -1;
+        }
+    } else if(bc == "Open" || bc == "obc"){
+        if(impl == "global"){
+            runGlobalBenchmark<Open>(size, sweeps, repeats, mag, verbose);
+        } else if(impl == "shared"){
+            runSharedBenchmark<Open>(size, sweeps, repeats, mag, false, verbose);
+        } else if(impl == "shared_cooperative"){
+            runSharedBenchmark<Open>(size, sweeps, repeats, true, true, verbose);
+        } else {
+            cerr << "Unknown impl: " << impl << endl;
+            return -1;
+        }
+    } else {
+        cerr << "Unknown boundary condition: " << bc << endl;
+        return -1;
+    }
 
     return 0;
 }

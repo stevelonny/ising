@@ -3,8 +3,9 @@
 
 set -e
 
-PROJECT_DIR="/home/steve/projects/ising"
-VENV_DIR="${PROJECT_DIR}/venv"
+# Determine project directory relative to this script so the setup is directory-agnostic
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_DIR="${PROJECT_DIR}/.venv"
 
 echo "=========================================="
 echo "Setting up Python virtual environment"
@@ -38,11 +39,8 @@ python -m pip install --upgrade pip setuptools wheel
 
 # Install requirements
 echo "Installing required packages..."
-python -m pip install \
-    pandas \
-    numpy \
-    matplotlib \
-    seaborn
+python -m pip install --upgrade pip
+python -m pip install -r "$PROJECT_DIR/requirements.txt"
 
 echo "=========================================="
 echo "Virtual environment setup complete!"
@@ -51,6 +49,6 @@ echo ""
 echo "To activate the environment, run:"
 echo "  source $VENV_DIR/bin/activate"
 echo ""
-echo "To run benchmarks:"
+echo "To run benchmarks:" 
 echo "  python $PROJECT_DIR/run_benchmarks.py"
 echo ""
