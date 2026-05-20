@@ -31,7 +31,17 @@ int main(){
         int total_tiles = n_TilesRow * (size / TILE_DIM_Y);
         int totalTilesPerColor = total_tiles / 2;
         int maxBlocks = numBlocksPerSM * numSMs;
-        int activeBlocks = std::min(maxBlocks, totalTilesPerColor);
+        //int activeBlocks = std::min(maxBlocks, totalTilesPerColor);
+        int activeBlocks = maxBlocks;
+        while(activeBlocks > 0){
+            if(totalTilesPerColor % activeBlocks == 0){
+                break;
+            }
+            activeBlocks--;
+        }
+        if(activeBlocks < (numSMs*2)){
+            activeBlocks = std::min(maxBlocks, totalTilesPerColor);
+        }
         std::cout << "size=" << size << " n_TilesRow="<<n_TilesRow<<" total_tiles="<<total_tiles
                   <<" totalTilesPerColor="<<totalTilesPerColor<<" maxBlocks="<<maxBlocks<<" activeBlocks="<<activeBlocks<<"\n";
     }
