@@ -10,14 +10,65 @@
 
 #define MAX_SWEEPS 500000
 
+struct BlockResult {
+    double mean;
+    double error;
+    double tau_int;
+};
+
+BlockResult calculate_blocked_error(const std::vector<double>& data, int max_levels = 15) {
+    std::vector<double> current_data = data;
+    
+    double mean = 0.0;
+    for(double val : data) mean += val;
+    mean /= data.size();
+
+    double max_err = 0.0;
+    double naive_err = 0.0;
+
+    for (int level = 0; level < max_levels; ++level) {
+        int n = current_data.size();
+        if (n < 2) break;
+
+        double var = 0.0;
+        double current_mean = 0.0;
+        for(double v : current_data) current_mean += v;
+        current_mean /= n;
+
+        for(double v : current_data) var += (v - current_mean) * (v - current_mean);
+        var /= (n - 1); 
+
+        double err = std::sqrt(var / n);
+        
+        if (level == 0) naive_err = err;
+        
+        if (err > max_err) max_err = err; 
+
+        int limit = (n / 2) * 2;
+        std::vector<double> next_data(limit / 2);
+        for (int i = 0; i < limit; i += 2) {
+            next_data[i/2] = 0.5 * (current_data[i] + current_data[i+1]);
+        }
+        current_data = next_data;
+    }
+    
+    double tau = 0.0;
+    if (naive_err > 0.0) {
+        tau = 0.5 * ((max_err * max_err) / (naive_err * naive_err) - 1.0);
+    }
+    if (tau < 0.0) tau = 0.0;
+
+    return {mean, max_err, tau};
+}
+
 int main(int argc, char** argv){
     if(argc != 5 && argc != 6){ 
         fmt::print(stderr, "Usage: {} <power of 2 for grid_size> <temperature> <nsweeps> <obc|pbc> [run_tag]\n", argv[0]);
         return -1;
     }
     int power2 = stoi(argv[1]);
-    if(power2 < 5){
-        fmt::print(stderr, "Power of 2 for grid size must be a positive integer greater than or equal to 5.\n");
+    if(power2 < 6){
+        fmt::print(stderr, "Power of 2 for grid size must be a positive integer greater than or equal to 6.\n");
         return -1;
     }
     double temp = stod(argv[2]);
@@ -48,7 +99,7 @@ int main(int argc, char** argv){
     }
     //run_tag used for distinguishing different runs, can be used in filename or just printed out
     //default is empty string
-    string run_tag = (argc == 6) ? argv[5] : "_default";
+    string run_tag = (argc == 6) ? argv[5] : "tagless";
 
     /* setup */
     int size = 1 << power2;
@@ -57,12 +108,14 @@ int main(int argc, char** argv){
     int subLen = subSize * subSize;
     int* d_lattice;
     cudaMalloc(&d_lattice, Len * sizeof(int));
-    const int blockDimX = 8;
-    const int blockDimY = 16;
-    int n_TilesRow = size / (blockDimX*2); //number of tiles per row (each tile is blockDimX*2 pixels wide)
+    const int TILE_DIM_X = __TILE_DIM_X__;
+    const int TILE_DIM_Y = __TILE_DIM_Y__;
+    const int blockDimX = TILE_DIM_X/2;
+    const int blockDimY = TILE_DIM_Y;
+    int n_TilesRow = size / (TILE_DIM_X); //number of tiles per row (each tile is blockDimX*2 pixels wide or TILE_DIM_X pixels wide)
     int n_tilesOfOneColor = (n_TilesRow/2) * n_TilesRow; //tiles to process for one color
-    int tileWidth = blockDimX*2 + 2; //tile size in pixels (halo added in kernel)
-    int tileHeight = blockDimY + 2; //tile size in pixels (halo added in kernel)
+    int tileWidth = TILE_DIM_X + 2; //tile size in pixels (halo added in kernel)
+    int tileHeight = TILE_DIM_Y + 2; //tile size in pixels (halo added in kernel)
     dim3 blockDim(blockDimX, blockDimY);
     dim3 gridDim(n_tilesOfOneColor);
     int sharedMemSize = (tileWidth*tileHeight) * sizeof(int);
@@ -192,11 +245,6 @@ int main(int argc, char** argv){
     
     checkCuda(cudaMalloc(&d.magnetization, nsweeps * sizeof(int)), "Failed to allocate magnetization on device");
     checkCuda(cudaMemset(d.magnetization, 0, nsweeps * sizeof(int)), "Failed to memset magnetization");
-    //open fileout
-    string filename = fmt::format("size_{}_temp{:.2f}_ns{}_bc_{}{}.dat", size, temp, nsweeps, (obc ? "obc" : "pbc"), "_run" + run_tag);
-    fmt::print("Saving to {}\n", filename);
-    ofstream fileout;
-    fileout.open(filename);
 
     /* simulation/measure */
     fmt::println("Measurement phase");
@@ -209,10 +257,42 @@ int main(int argc, char** argv){
     fmt::println("Measurement completed. Retrieving data...");
     //retrieve d_magnetization
     checkCuda(cudaMemcpy(magnetization, d.magnetization, nsweeps * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy magnetization from device to host");
-    fmt::println("Data retrieval completed. Saving to file...");
-    for(int i{0}; i<nsweeps; i++){
-        fileout << magnetization[i] << "\n";
+    fmt::println("Data retrieval completed. Processing data...");
+    vector<double> M_abs(nsweeps);
+    vector<double> M_sq(nsweeps);
+    double mean_M4 = 0.0;
+
+    for(int i{0}; i<nsweeps; ++i){
+        double m = (double)magnetization[i];
+        double m_abs = std::abs(m);
+        double m2 = m*m;
+        
+        M_abs[i] = m_abs;
+        M_sq[i] = m2;
+        mean_M4 += (m2*m2); //M^4
     }
+    mean_M4 /= (double)nsweeps;
+
+    BlockResult res_M_abs = calculate_blocked_error(M_abs, 15);
+    BlockResult res_M2 = calculate_blocked_error(M_sq, 15);
+
+    std::string filename = "master_results.csv";
+    std::ofstream fileout;    
+    std::ifstream infile(filename);
+    bool write_header = !infile.good();
+    infile.close();
+
+    fileout.open(filename, std::ios_base::app);
+    if(write_header) fmt::println(fileout, "L,T,run_tag,M_abs,err_M_abs,tau_M_abs,M2,err_M2,tau_M2,M4");
+    
+    fmt::println(
+        fileout,
+        "{},{:.3f},{},{},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f}",
+        size, temp, run_tag, (is_thermalized ? 0 : 1),
+        res_M_abs.mean, res_M_abs.error, res_M_abs.tau_int,
+        res_M2.mean, res_M2.error, res_M2.tau_int,
+        mean_M4
+    );
     fileout.close();
     fmt::println("Data saved to file.");
     
@@ -221,7 +301,6 @@ int main(int argc, char** argv){
     cudaFree(d.lattice);
     cudaFree(d.state);
     cudaFree(d.magnetization);
-
 
     return 0;
 }
