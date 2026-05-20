@@ -6,16 +6,23 @@ Compares global-memory vs shared-memory CUDA implementations
 
 import json
 import os
+from io import StringIO
 import shlex
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
+try:
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+except Exception as e:
+    missing = str(e)
+    sys.stderr.write(f"Missing Python dependencies for run_benchmarks.py: {missing}\n")
+    sys.stderr.write("Install them with:\n  pip install -r requirements.txt\nOr run setup_venv.sh to create a venv with the required packages.\n")
+    raise
 
 
 def run_cmd(cmd, cwd=None, timeout=600):
@@ -42,9 +49,9 @@ def setup_environment():
 
 
 def compile_benchmark(workspace, compute_capability):
-    """Compile bench_ising.cu to bench_ising.x"""
-    benchmark_source = workspace / 'bench_ising.cu'
-    benchmark_binary = workspace / 'bench_ising.x'
+    """Compile bench_comparison.cu to bench_comparison.x"""
+    benchmark_source = workspace / 'bench_comparison.cu'
+    benchmark_binary = workspace / 'bench_comparison.x'
     
     if not benchmark_source.exists():
         raise FileNotFoundError(f'Missing benchmark source: {benchmark_source}')
@@ -62,15 +69,40 @@ def compile_benchmark(workspace, compute_capability):
     return benchmark_binary
 
 
-def parse_json_lines(stdout):
-    """Parse JSON-line format output"""
-    rows = []
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        rows.append(json.loads(line))
-    return rows
+def parse_csv_stdout(stdout):
+    df = pd.read_csv(StringIO(stdout))
+    # normalize columns to expected names used downstream
+    df = df.rename(columns={
+        'implementation': 'impl',
+        'magnetization': 'mag',
+        'time_ms': 'elapsed_ms',
+        'repeat': 'repeat',
+        'size': 'size',
+        'sweeps': 'sweeps'
+    })
+    # ensure mag is numeric: accept 'Yes'/'No' or numeric
+    def norm_mag(x):
+        if pd.isna(x):
+            return 0
+        if isinstance(x, (int, float)):
+            return int(x)
+        xs = str(x).strip()
+        if xs.lower() in ('yes', '1', 'true'):
+            return 1
+        if xs.lower() in ('no', '0', 'false'):
+            return 0
+        try:
+            return int(xs)
+        except Exception:
+            return 0
+    df['mag'] = df['mag'].apply(norm_mag)
+    # normalize implementation names
+    df['impl'] = df['impl'].astype(str).str.replace('GPU_Global', 'global')
+    df['impl'] = df['impl'].astype(str).str.replace('Shared_Memory', 'shared')
+    df['impl'] = df['impl'].astype(str).str.replace('shared_cooperative', 'shared_cooperative')
+    # add boundary condition column (bench_comparison uses Periodic only)
+    df['bc'] = 'Periodic'
+    return df.to_dict(orient='records')
 
 
 def run_benchmark(benchmark_binary, impl, bc, size, sweeps, mag, repeats, workspace):
@@ -87,7 +119,7 @@ def run_benchmark(benchmark_binary, impl, bc, size, sweeps, mag, repeats, worksp
     rc, out, err = run_cmd(' '.join(shlex.quote(part) for part in cmd), cwd=str(workspace), timeout=7200)
     if rc != 0:
         raise RuntimeError(err or out or 'benchmark failed')
-    return parse_json_lines(out)
+    return parse_csv_stdout(out)
 
 
 def sweeps_for_size(size):
@@ -107,15 +139,20 @@ def sweeps_for_size(size):
 
 def main():
     """Main benchmark execution"""
-    workspace = Path('/home/steve/projects/ising')
+    # Make the script directory-agnostic: use the script's parent directory
+    workspace = Path(__file__).resolve().parent
     results_dir = workspace / 'bench_results'
-    results_dir.mkdir(exist_ok=True)
+    results_dir.mkdir(parents=True, exist_ok=True)
     
     # Configuration
-    sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
-    implementations = ['global', 'shared']
+    sizes = [1024, 2048, 4096, 8192]
+    max_size_env = os.getenv('BENCH_MAX_SIZE')
+    if max_size_env:
+        max_size = int(max_size_env)
+        sizes = [size for size in sizes if size <= max_size]
+    implementations = ['global', 'shared', 'shared_cooperative']
     boundary_conditions = ['Periodic']
-    repeats = 5
+    repeats = int(os.getenv('BENCH_REPEATS', '5'))
     
     sweeps_by_size = {size: sweeps_for_size(size) for size in sizes}
     
@@ -123,32 +160,33 @@ def main():
     print('ISING GPU BENCHMARK SUITE')
     print('=' * 80)
     print(f'Results directory: {results_dir}')
-    print(f'Configurations: {len(implementations)} implementations × {len(sizes)} sizes × {len(boundary_conditions)} BC × 2 mag modes × {repeats} repeats')
-    print(f'Total benchmark runs: {len(implementations) * len(sizes) * len(boundary_conditions) * 2}')
+    print(f'Configurations: {len(implementations)} implementations × {len(sizes)} sizes × {len(boundary_conditions)} BC × repeats={repeats}')
+
+    benchmark_plan = []
+    for bc in boundary_conditions:
+        for impl in implementations:
+            #mags = [0, 1] if impl != 'shared_cooperative' else [1]
+            mags = [1]
+            for mag in mags:
+                for size in sizes:
+                    benchmark_plan.append((impl, bc, size, sweeps_by_size[size], mag))
+    print(f'Total benchmark runs: {len(benchmark_plan)}')
     
     # Setup
     compute_capability = setup_environment()
     benchmark_binary = compile_benchmark(workspace, compute_capability)
-    
-    # Benchmark
+
+    # Run per-configuration benchmarks
     print('\n' + '=' * 80)
     print('RUNNING BENCHMARKS')
     print('=' * 80)
-    
+
     results = []
-    
-    for mag in [0, 1]:
-        mag_label = 'with magnetization' if mag else 'pure updates'
-        print(f'\n--- Benchmarking: {mag_label} (mag={mag}) ---')
-        
-        for bc in boundary_conditions:
-            for impl in implementations:
-                for size in sizes:
-                    sweeps = sweeps_by_size[size]
-                    print(f'  {impl:6s} {bc:8s} size={size:5d} sweeps={sweeps:4d}...', end=' ', flush=True)
-                    rows = run_benchmark(benchmark_binary, impl, bc, size, sweeps, mag, repeats, workspace)
-                    results.extend(rows)
-                    print(f'✓ ({len(rows)} samples)')
+    for impl, bc, size, sweeps, mag in benchmark_plan:
+        print(f'  {impl:18s} {bc:8s} size={size:5d} sweeps={sweeps:4d} mag={mag}...', end=' ', flush=True)
+        rows = run_benchmark(benchmark_binary, impl, bc, size, sweeps, mag, repeats, workspace)
+        results.extend(rows)
+        print(f'✓ ({len(rows)} samples)')
     
     # Aggregate
     print('\n' + '=' * 80)
@@ -187,8 +225,9 @@ def main():
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     
     # Elapsed time
+    impls_plot = [('global', 'o'), ('shared', 's'), ('shared_cooperative', '^')]
     for mag, linestyle in [(0, '-'), (1, '--')]:
-        for impl, marker in [('global', 'o'), ('shared', 's')]:
+        for impl, marker in impls_plot:
             subset = agg[(agg['mag'] == mag) & (agg['impl'] == impl)].sort_values('size')
             label = f'{impl} mag={mag}'
             axes[0, 0].errorbar(subset['size'], subset['elapsed_ms_mean'], 
@@ -205,7 +244,7 @@ def main():
     
     # Throughput
     for mag, linestyle in [(0, '-'), (1, '--')]:
-        for impl, marker in [('global', 'o'), ('shared', 's')]:
+        for impl, marker in impls_plot:
             subset = agg[(agg['mag'] == mag) & (agg['impl'] == impl)].sort_values('size')
             label = f'{impl} mag={mag}'
             axes[0, 1].errorbar(subset['size'], subset['throughput_mean'], 
@@ -220,21 +259,29 @@ def main():
     axes[0, 1].legend()
     axes[0, 1].grid(True)
     
-    # Speedup
+    # Speedup (global vs each shared variant)
     speedup_rows = []
+    shared_variants = ['shared', 'shared_cooperative']
     for bc in boundary_conditions:
         for mag in [0, 1]:
             g = agg[(agg['impl'] == 'global') & (agg['bc'] == bc) & (agg['mag'] == mag)][['size', 'elapsed_ms_mean']].rename(columns={'elapsed_ms_mean': 'global_ms'})
-            s = agg[(agg['impl'] == 'shared') & (agg['bc'] == bc) & (agg['mag'] == mag)][['size', 'elapsed_ms_mean']].rename(columns={'elapsed_ms_mean': 'shared_ms'})
-            merged = g.merge(s, on='size')
-            merged['speedup'] = merged['global_ms'] / merged['shared_ms']
-            merged['mag'] = mag
-            speedup_rows.append(merged)
-    
-    speedup_df = pd.concat(speedup_rows, ignore_index=True)
-    for mag, marker in [(0, 'o'), (1, 's')]:
-        subset = speedup_df[speedup_df['mag'] == mag].sort_values('size')
-        axes[1, 0].semilogx(subset['size'], subset['speedup'], marker=marker, label=f'mag={mag}')
+            for s_impl in shared_variants:
+                s = agg[(agg['impl'] == s_impl) & (agg['bc'] == bc) & (agg['mag'] == mag)][['size', 'elapsed_ms_mean']].rename(columns={'elapsed_ms_mean': 'shared_ms'})
+                if s.empty or g.empty:
+                    continue
+                merged = g.merge(s, on='size')
+                merged['speedup'] = merged['global_ms'] / merged['shared_ms']
+                merged['mag'] = mag
+                merged['variant'] = s_impl
+                speedup_rows.append(merged)
+
+    if speedup_rows:
+        speedup_df = pd.concat(speedup_rows, ignore_index=True)
+        for variant, marker in [('shared', 'o'), ('shared_cooperative', 's')]:
+            subset = speedup_df[speedup_df['variant'] == variant].sort_values('size')
+            if subset.empty:
+                continue
+            axes[1, 0].semilogx(subset['size'], subset['speedup'], marker=marker, label=f'{variant}')
     
     axes[1, 0].axhline(1.0, color='red', linestyle='--', linewidth=1, label='baseline')
     axes[1, 0].set_title('Global / Shared Speedup')

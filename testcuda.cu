@@ -7,13 +7,6 @@
 
 using namespace std;
 
-inline void checkCuda(cudaError_t err, const char* msg) {
-    if (err != cudaSuccess) {
-        fmt::println("Error: {} - {}", msg, cudaGetErrorString(err));
-        exit(-1);
-    }
-}
-
 
 int main(int argc, char** argv){
 
@@ -225,5 +218,106 @@ int main(int argc, char** argv){
     delete[] lattice;
     delete[] whites;
     delete[] blacks;
+
+    /* ----- */
+    //test cooperativeUpdateTileKernel with cooperative launch
+    fmt::println("Testing cooperative kernel launch");
+    
+    lattice = new int[Len];
+    int* d_magnetization;
+    checkCuda(cudaMalloc(&d_lattice, Len * sizeof(int)), "cudaMalloc d_lattice for coop failed");
+    
+    int blockSweeps = 2;
+    checkCuda(cudaMalloc(&d_magnetization, blockSweeps * sizeof(int)), "cudaMalloc d_magnetization failed");
+    int* h_magnetization = new int[blockSweeps];
+    for(int i = 0; i < blockSweeps; i++){
+        h_magnetization[i] = 0;
+    }
+    checkCuda(cudaMemcpy(d_magnetization, h_magnetization, blockSweeps * sizeof(int), cudaMemcpyHostToDevice), "copy magnetization to device");
+    
+    //re-initialize state for cooperative test
+    nthreads = subLen;
+    if(subLen > 1024) nthreads = 1024;
+    nblocks = (subLen + nthreads - 1) / nthreads;
+    curandStatePhilox4_32_10_t* d_state_coop;
+    checkCuda(cudaMalloc(&d_state_coop, subLen * sizeof(curandStatePhilox4_32_10_t)), "cudaMalloc d_state_coop failed");
+    initCurand<<<nblocks, nthreads>>>(d_state_coop, 42);
+    checkCuda(cudaGetLastError(), "init coop state launch failed");
+    checkCuda(cudaDeviceSynchronize(), "init coop state execution failed");
+
+    //test PERIODIC boundary condition
+    fmt::println("  Testing PERIODIC boundary condition");
+    //init lattice
+    for(int i = 0; i < size; i++){
+        for(int j = 0; j < size; j++){
+            lattice[i * size + j] = ((i + j) % 2 == 0) ? 1 : -1;
+        }
+    }
+    checkCuda(cudaMemcpy(d_lattice, lattice, Len * sizeof(int), cudaMemcpyHostToDevice), "copy lattice to device for coop");
+
+    //create DataBlockShared structure
+    DataBlockShared h_datablock;
+    h_datablock.lattice = d_lattice;
+    h_datablock.size = size;
+    h_datablock.Len = Len;
+    h_datablock.subLen = subLen;
+    h_datablock.subSize = subSize;
+    h_datablock.temp = 1.0;
+    h_datablock.state = d_state_coop;
+    h_datablock.magnetization = d_magnetization;
+    
+    fmt::println("    Launching cooperative update kernel (PERIODIC)...");
+    launchCooperativeUpdateTileKernel<Periodic>(&h_datablock, blockSweeps);
+    checkCuda(cudaGetLastError(), "cooperative update launch failed (periodic)");
+    checkCuda(cudaDeviceSynchronize(), "cooperative update execution failed (periodic)");
+    checkCuda(cudaMemcpy(lattice, d_lattice, Len * sizeof(int), cudaMemcpyDeviceToHost), "copy lattice from device (coop periodic)");
+    for(int i = 0; i < Len; i++){
+        if(lattice[i] != -1 && lattice[i] != 1){
+            fmt::println("Invalid spin at index {} after coop update (PERIODIC): {}", i, lattice[i]);
+            return -1;
+        }
+    }
+    checkCuda(cudaMemcpy(h_magnetization, d_magnetization, blockSweeps * sizeof(int), cudaMemcpyDeviceToHost), "copy magnetization from device (periodic)");
+    fmt::println("    Magnetization after {} sweeps (PERIODIC): {}", blockSweeps, h_magnetization[blockSweeps-1]);
+    fmt::println("    PERIODIC: passed");
+
+    //test OPEN boundary condition
+    fmt::println("  Testing OPEN boundary condition");
+    //reset magnetization
+    for(int i = 0; i < blockSweeps; i++){
+        h_magnetization[i] = 0;
+    }
+    checkCuda(cudaMemcpy(d_magnetization, h_magnetization, blockSweeps * sizeof(int), cudaMemcpyHostToDevice), "reset magnetization");
+
+    //reset lattice
+    for(int i = 0; i < size; i++){
+        for(int j = 0; j < size; j++){
+            lattice[i * size + j] = ((i + j) % 2 == 0) ? 1 : -1;
+        }
+    }
+    checkCuda(cudaMemcpy(d_lattice, lattice, Len * sizeof(int), cudaMemcpyHostToDevice), "copy lattice to device for coop (open)");
+    
+    fmt::println("    Launching cooperative update kernel (OPEN)...");
+    launchCooperativeUpdateTileKernel<Open>(&h_datablock, blockSweeps);
+    checkCuda(cudaGetLastError(), "cooperative update launch failed (open)");
+    checkCuda(cudaDeviceSynchronize(), "cooperative update execution failed (open)");
+    checkCuda(cudaMemcpy(lattice, d_lattice, Len * sizeof(int), cudaMemcpyDeviceToHost), "copy lattice from device (coop open)");
+    for(int i = 0; i < Len; i++){
+        if(lattice[i] != -1 && lattice[i] != 1){
+            fmt::println("Invalid spin at index {} after coop update (OPEN): {}", i, lattice[i]);
+            return -1;
+        }
+    }
+    checkCuda(cudaMemcpy(h_magnetization, d_magnetization, blockSweeps * sizeof(int), cudaMemcpyDeviceToHost), "copy magnetization from device (open)");
+    fmt::println("    Magnetization after {} sweeps (OPEN): {}", blockSweeps, h_magnetization[blockSweeps-1]);
+    fmt::println("    OPEN: passed");
+
+    //cleanuptest cooperative
+    checkCuda(cudaFree(d_state_coop), "cudaFree d_state_coop failed");
+    checkCuda(cudaFree(d_magnetization), "cudaFree d_magnetization failed");
+    checkCuda(cudaFree(d_lattice), "cudaFree d_lattice (coop) failed");
+    delete[] lattice;
+    delete[] h_magnetization;
+    
     return 0;
 }
