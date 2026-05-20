@@ -145,7 +145,7 @@ def main():
     results_dir.mkdir(parents=True, exist_ok=True)
     
     # Configuration
-    sizes = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
+    sizes = [1024, 2048, 4096, 8192]
     max_size_env = os.getenv('BENCH_MAX_SIZE')
     if max_size_env:
         max_size = int(max_size_env)

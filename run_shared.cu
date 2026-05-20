@@ -201,10 +201,10 @@ int main(int argc, char** argv){
     /* simulation/measure */
     fmt::println("Measurement phase");
     if(obc){
-        launchCooperativeUpdateTileKernel<Open>(&d, nsweeps);
+        blockSweepKernelShared<Open>(&d, nsweeps);
     }
     else{
-        launchCooperativeUpdateTileKernel<Periodic>(&d, nsweeps);
+        blockSweepKernelShared<Periodic>(&d, nsweeps);
     }
     fmt::println("Measurement completed. Retrieving data...");
     //retrieve d_magnetization

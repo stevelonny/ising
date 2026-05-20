@@ -130,6 +130,7 @@ int main(int argc, char** argv){
     else{
         launchCooperativeUpdateTileKernel<Periodic>(&d, nsweeps);
     }
+    cudaDeviceSynchronize();
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     fmt::println("Measurement completed in {} μs.", duration);
