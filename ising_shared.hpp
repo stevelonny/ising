@@ -17,6 +17,9 @@ inline void checkCuda(cudaError_t err, const char* msg) {
     }
 }
 
+#define __TILE_DIM_X__ 32
+#define __TILE_DIM_Y__ 32
+
 #ifndef __CONSTANT_D_EXPTABLE__
 #define __CONSTANT_D_EXPTABLE__
 __constant__ float d_expTable[5];
@@ -419,7 +422,7 @@ template<BoundaryCondition BC>
 __global__ void cooperativeUpdateTileKernel(DataBlockShared d, int blocksweeps, int totalTilesPerColor){
     cg::grid_group grid = cg::this_grid();
     
-    const int TILE_DIM_X = 16; 
+    const int TILE_DIM_X = __TILE_DIM_X__;
     int n_TilesRow = d.size / TILE_DIM_X; 
 
     extern __shared__ int s_tile_raw[];
@@ -442,8 +445,8 @@ __global__ void cooperativeUpdateTileKernel(DataBlockShared d, int blocksweeps, 
 
 template<BoundaryCondition BC>
 void launchCooperativeUpdateTileKernel(DataBlockShared* d, int blockSweeps){
-    const int TILE_DIM_X = 16; 
-    const int TILE_DIM_Y = 16; 
+    const int TILE_DIM_X = __TILE_DIM_X__;
+    const int TILE_DIM_Y = __TILE_DIM_Y__;
     
     dim3 block(TILE_DIM_X/2, TILE_DIM_Y);     
     int n_TilesRow = d->size/TILE_DIM_X;    
@@ -468,7 +471,19 @@ void launchCooperativeUpdateTileKernel(DataBlockShared* d, int blockSweeps){
 
     int maxBlocks = numBlocksPerStreamingProcessor * numStreamingProcessors;
     //if the lattice is smaller, use less blocks
-    int activeBlocks = std::min(maxBlocks, totalTilesPerColor);
+    //int activeBlocks = std::min(maxBlocks, totalTilesPerColor);
+    int activeBlocks = maxBlocks;
+    while(activeBlocks > 0){
+        if(totalTilesPerColor % activeBlocks == 0){
+            break;
+        }
+        activeBlocks--;
+    }
+
+    if(activeBlocks < (numStreamingProcessors*2)){
+        activeBlocks = std::min(maxBlocks, totalTilesPerColor);
+    }
+
     dim3 grid(activeBlocks);
 
     DataBlockShared d_val = *d;
@@ -492,12 +507,12 @@ void launchCooperativeUpdateTileKernel(DataBlockShared* d, int blockSweeps){
 
 template<BoundaryCondition BC>
 void blockSweepKernelShared(DataBlockShared* d, int blockSweeps) {
-    const int TILE_DIM_X = 16; 
-    const int TILE_DIM_Y = 16; 
-    
-    dim3 block(TILE_DIM_X/2, TILE_DIM_Y);     
-    int n_TilesRow = d->size/TILE_DIM_X;    
-    int total_tiles = n_TilesRow * (d->size/TILE_DIM_Y);    
+    const int TILE_DIM_X = __TILE_DIM_X__;
+    const int TILE_DIM_Y = __TILE_DIM_Y__;
+
+    dim3 block(TILE_DIM_X/2, TILE_DIM_Y);
+    int n_TilesRow = d->size/TILE_DIM_X;
+    int total_tiles = n_TilesRow * (d->size/TILE_DIM_Y);
     dim3 grid(total_tiles/2);
     int tileWidth = TILE_DIM_X + 2;
     int tileHeight = TILE_DIM_Y + 2;

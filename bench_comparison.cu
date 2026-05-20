@@ -138,8 +138,8 @@ __global__ void updateTileKernelNoMag(int* lattice, int size, int color, int n_T
 
 template<BoundaryCondition BC>
 void blockSweepKernelSharedNoMag(int* d_lattice, int size, int blockSweeps) {
-    const int TILE_DIM_X = 16; 
-    const int TILE_DIM_Y = 16; 
+    const int TILE_DIM_X = __TILE_DIM_X__;
+    const int TILE_DIM_Y = __TILE_DIM_Y__;
     
     dim3 block(TILE_DIM_X/2, TILE_DIM_Y);     
     int n_TilesRow = size/TILE_DIM_X;    
@@ -170,12 +170,12 @@ void blockSweepKernelSharedNoMag(int* d_lattice, int size, int blockSweeps) {
 
 template<BoundaryCondition BC>
 void blockSweepKernelSharedWithMag(DataBlockShared* d, int blockSweeps) {
-    const int TILE_DIM_X = 16; 
-    const int TILE_DIM_Y = 16; 
-    
-    dim3 block(TILE_DIM_X/2, TILE_DIM_Y);     
-    int n_TilesRow = d->size/TILE_DIM_X;    
-    int total_tiles = n_TilesRow * (d->size/TILE_DIM_Y);    
+    const int TILE_DIM_X = __TILE_DIM_X__;
+    const int TILE_DIM_Y = __TILE_DIM_Y__;
+
+    dim3 block(TILE_DIM_X/2, TILE_DIM_Y);
+    int n_TilesRow = d->size/TILE_DIM_X;
+    int total_tiles = n_TilesRow * (d->size/TILE_DIM_Y);
     dim3 grid(total_tiles/2);
     int tileWidth = TILE_DIM_X + 2;
     int tileHeight = TILE_DIM_Y + 2;
@@ -270,8 +270,8 @@ void runGlobalBenchmark(int size, int sweeps, int repeats, bool withMag, bool ve
 
 template<BoundaryCondition BC>
 void runSharedBenchmark(int size, int sweeps, int repeats, bool withMag, bool cooperative, bool verbose){
-    const int TILE_DIM_X = 16;
-    const int TILE_DIM_Y = 16;
+    const int TILE_DIM_X = __TILE_DIM_X__;
+    const int TILE_DIM_Y = __TILE_DIM_Y__;
     const int Len = size * size;
     const int subLen = size * (size / 2);
     const long long total_updates = (long long)Len * (long long)sweeps;

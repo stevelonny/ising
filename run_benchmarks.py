@@ -145,7 +145,7 @@ def main():
     results_dir.mkdir(parents=True, exist_ok=True)
     
     # Configuration
-    sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
+    sizes = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
     max_size_env = os.getenv('BENCH_MAX_SIZE')
     if max_size_env:
         max_size = int(max_size_env)
@@ -165,7 +165,8 @@ def main():
     benchmark_plan = []
     for bc in boundary_conditions:
         for impl in implementations:
-            mags = [0, 1] if impl != 'shared_cooperative' else [1]
+            #mags = [0, 1] if impl != 'shared_cooperative' else [1]
+            mags = [1]
             for mag in mags:
                 for size in sizes:
                     benchmark_plan.append((impl, bc, size, sweeps_by_size[size], mag))
