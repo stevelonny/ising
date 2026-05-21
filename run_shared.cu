@@ -288,7 +288,7 @@ int main(int argc, char** argv){
     
     fmt::println(
         fileout,
-        "{},{:.3f},{},{},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f}",
+        "{},{:.4f},{},{},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f}",
         size, temp, run_tag, (is_thermalized ? 1 : 0),
         res_M_abs.mean, res_M_abs.error, res_M_abs.tau_int,
         res_M2.mean, res_M2.error, res_M2.tau_int,
