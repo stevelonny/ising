@@ -260,6 +260,7 @@ int main(int argc, char** argv){
     fmt::println("Data retrieval completed. Processing data...");
     vector<double> M_abs(nsweeps);
     vector<double> M_sq(nsweeps);
+    vector<double> M_quad(nsweeps);
     double mean_M4 = 0.0;
 
     for(int i{0}; i<nsweeps; ++i){
@@ -269,32 +270,32 @@ int main(int argc, char** argv){
         
         M_abs[i] = m_abs;
         M_sq[i] = m2;
-        mean_M4 += (m2*m2); //M^4
+        M_quad[i] = m2 * m2;
     }
-    mean_M4 /= (double)nsweeps;
 
     BlockResult res_M_abs = calculate_blocked_error(M_abs, 15);
     BlockResult res_M2 = calculate_blocked_error(M_sq, 15);
+    BlockResult res_M4 = calculate_blocked_error(M_quad, 15);
 
-    std::string filename = "master_results.csv";
-    std::ofstream fileout;    
+    std::string filename = "master_results_new.csv";
+    std::ofstream fileout;
     std::ifstream infile(filename);
     bool write_header = !infile.good();
     infile.close();
 
     fileout.open(filename, std::ios_base::app);
-    if(write_header) fmt::println(fileout, "L,T,run_tag,M_abs,err_M_abs,tau_M_abs,M2,err_M2,tau_M2,M4");
+    if(write_header) fmt::println(fileout, "L,T,run_tag,is_thermalized,M_abs,err_M_abs,tau_M_abs,M2,err_M2,tau_M2,M4,err_M4,tau_M4");
     
     fmt::println(
         fileout,
-        "{},{:.3f},{},{},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f}",
+        "{},{:.3f},{},{},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f}",
         size, temp, run_tag, (is_thermalized ? 1 : 0),
         res_M_abs.mean, res_M_abs.error, res_M_abs.tau_int,
         res_M2.mean, res_M2.error, res_M2.tau_int,
-        mean_M4
+        res_M4.mean, res_M4.error, res_M4.tau_int
     );
     fileout.close();
-    fmt::println("Data saved to file.");
+    fmt::println("Data saved to {}.", filename);
     
     /* cleanup */
     delete[] magnetization;
