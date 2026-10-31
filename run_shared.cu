@@ -1,4 +1,5 @@
 #include "ising_shared.hpp"
+#include "observables.hpp"
 #include <cuda_runtime.h>
 #include <fstream>
 #include <iostream>
@@ -9,57 +10,6 @@
 #include <fmt/ostream.h>
 
 #define MAX_SWEEPS 500000
-
-struct BlockResult {
-    double mean;
-    double error;
-    double tau_int;
-};
-
-BlockResult calculate_blocked_error(const std::vector<double>& data, int max_levels = 15) {
-    std::vector<double> current_data = data;
-    
-    double mean = 0.0;
-    for(double val : data) mean += val;
-    mean /= data.size();
-
-    double max_err = 0.0;
-    double naive_err = 0.0;
-
-    for (int level = 0; level < max_levels; ++level) {
-        int n = current_data.size();
-        if (n < 2) break;
-
-        double var = 0.0;
-        double current_mean = 0.0;
-        for(double v : current_data) current_mean += v;
-        current_mean /= n;
-
-        for(double v : current_data) var += (v - current_mean) * (v - current_mean);
-        var /= (n - 1); 
-
-        double err = std::sqrt(var / n);
-        
-        if (level == 0) naive_err = err;
-        
-        if (err > max_err) max_err = err; 
-
-        int limit = (n / 2) * 2;
-        std::vector<double> next_data(limit / 2);
-        for (int i = 0; i < limit; i += 2) {
-            next_data[i/2] = 0.5 * (current_data[i] + current_data[i+1]);
-        }
-        current_data = next_data;
-    }
-    
-    double tau = 0.0;
-    if (naive_err > 0.0) {
-        tau = 0.5 * ((max_err * max_err) / (naive_err * naive_err) - 1.0);
-    }
-    if (tau < 0.0) tau = 0.0;
-
-    return {mean, max_err, tau};
-}
 
 int main(int argc, char** argv){
     if(argc != 5 && argc != 6){ 
@@ -139,9 +89,13 @@ int main(int argc, char** argv){
     int index{0};
     int window_size{10000};
     int* d_magnetization;
+    int * d_energy;
     cudaMalloc(&d_magnetization, window_size * sizeof(int));
+    cudaMalloc(&d_energy, window_size * sizeof(int));
     cudaMemset(d_magnetization, 0, window_size * sizeof(int));
+    cudaMemset(d_energy, 0, window_size * sizeof(int));
     int* magnetization = new int[window_size];
+    int* energy = new int[window_size];
 
     /* annealing */
     if(true/* obc */){ //temperature annealing schedule: cool from high T to target over 1000 sweeps
@@ -273,9 +227,9 @@ int main(int argc, char** argv){
         M_quad[i] = m2 * m2;
     }
 
-    BlockResult res_M_abs = calculate_blocked_error(M_abs, 15);
-    BlockResult res_M2 = calculate_blocked_error(M_sq, 15);
-    BlockResult res_M4 = calculate_blocked_error(M_quad, 15);
+    BlockResult res_M_abs = calculateBlockedError(M_abs, 15);
+    BlockResult res_M2 = calculateBlockedError(M_sq, 15);
+    BlockResult res_M4 = calculateBlockedError(M_quad, 15);
 
     std::string filename = "master_results_new.csv";
     std::ofstream fileout;
