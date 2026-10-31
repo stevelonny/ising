@@ -662,6 +662,8 @@ void launchCooperativeUpdateTileKernel(DataBlockShared* d, int blockSweeps){
 
 }
 
+//says "int blockSweeps" but it is actually the number of sweeps to perform
+//old remains of old blocking implementation
 template<BoundaryCondition BC>
 void blockSweepKernelShared(DataBlockShared* d, int blockSweeps) {
     const int TILE_DIM_X = __TILE_DIM_X__;
@@ -683,6 +685,7 @@ void blockSweepKernelShared(DataBlockShared* d, int blockSweeps) {
             0,
             n_TilesRow, 
             &d->magnetization[s],
+            &d->energy[s],
             d->state
         );
         /* blue pass */        
@@ -692,6 +695,7 @@ void blockSweepKernelShared(DataBlockShared* d, int blockSweeps) {
             1,
             n_TilesRow, 
             &d->magnetization[s],
+            &d->energy[s],
             d->state
         );
     }
