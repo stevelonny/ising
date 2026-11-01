@@ -54,18 +54,6 @@ int main(int argc, char** argv){
 
     /* setup */
     DataBlockShared d;
-    // cudaMalloc(&d_lattice, Len * sizeof(int));
-    // const int TILE_DIM_X = __TILE_DIM_X__;
-    // const int TILE_DIM_Y = __TILE_DIM_Y__;
-    // const int blockDimX = TILE_DIM_X/2;
-    // const int blockDimY = TILE_DIM_Y;
-    // int n_TilesRow = size / (TILE_DIM_X); //number of tiles per row (each tile is blockDimX*2 pixels wide or TILE_DIM_X pixels wide)
-    // int n_tilesOfOneColor = (n_TilesRow/2) * n_TilesRow; //tiles to process for one color
-    // int tileWidth = TILE_DIM_X + 2; //tile size in pixels (halo added in kernel)
-    // int tileHeight = TILE_DIM_Y + 2; //tile size in pixels (halo added in kernel)
-    // dim3 blockDim(blockDimX, blockDimY);
-    // dim3 gridDim(n_tilesOfOneColor);
-    // int sharedMemSize = (tileWidth*tileHeight) * sizeof(int);
     int size = 1 << power2;
     int subSize = size/2;
     int Len = size * size;
@@ -105,6 +93,7 @@ int main(int argc, char** argv){
         initLatticeKernel<<<nblocks, nthreads>>>(d.lattice, Len, d.state);
         cudaDeviceSynchronize();
     }
+    cudaDeviceSynchronize();
 
     /* interlude A */
     float expTable[9];
@@ -121,6 +110,7 @@ int main(int argc, char** argv){
     else{
         therm_result = thermalize<Periodic>(&d);
     }
+    cudaDeviceSynchronize();
     bool is_thermalized = therm_result.thermalized;
     fmt::println("Thermalization {} with {} sweeps", is_thermalized, therm_result.sweeps);
     /* interlude  B */
