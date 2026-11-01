@@ -9,48 +9,71 @@
 #include <cstdio>
 #include <fmt/format.h>
 #include <fmt/ostream.h>
+#include <getopt.h>
 
-#define MAX_SWEEPS 500000
+static void print_usage(const char* prog) {
+    fmt::print(stderr,
+        "Usage: {} -L <log2_size> -T <temp> -N <nsweeps> -b <obc|pbc> "
+        "[-t <tag>] [-o <output.csv>] [-s <seed>]\n\n"
+        "  -L, --log2-size  Power of 2 for grid size (integer >= 6)\n"
+        "  -T, --temp       Temperature (float > 0)\n"
+        "  -N, --nsweeps    Number of measurement sweeps (int > 0)\n"
+        "  -b, --bc         Boundary conditions: obc or pbc\n"
+        "  -t, --tag        Run tag for output CSV  [default: tagless]\n"
+        "  -o, --output     Output CSV filename     [default: master_results_energy.csv]\n"
+        "  -s, --seed       PRNG seed               [default: 42]\n",
+        prog);
+}
 
 int main(int argc, char** argv){
-    if(argc != 5 && argc != 6){ 
-        fmt::print(stderr, "Usage: {} <power of 2 for grid_size> <temperature> <nsweeps> <obc|pbc> [run_tag]\n", argv[0]);
-        return -1;
+    /* defaults */
+    int       power2   = -1;
+    double    temp     = -1.0;
+    int       nsweeps  = -1;
+    bool      obc      = false;
+    bool      bc_set   = false;
+    string    run_tag  = "tagless";
+    string    outfile  = "master_results.csv";
+    unsigned long seed = 42;
+    static const struct option long_opts[] = {
+        {"log2-size", required_argument, nullptr, 'L'},
+        {"temp",      required_argument, nullptr, 'T'},
+        {"nsweeps",   required_argument, nullptr, 'N'},
+        {"bc",        required_argument, nullptr, 'b'},
+        {"tag",       required_argument, nullptr, 't'},
+        {"output",    required_argument, nullptr, 'o'},
+        {"seed",      required_argument, nullptr, 's'},
+        {"help",      no_argument,       nullptr, 'h'},
+        {nullptr,     0,                 nullptr,  0 }
+    };
+    int opt;
+    while ((opt = getopt_long(argc, argv, "L:T:N:b:t:o:s:h", long_opts, nullptr)) != -1) {
+        switch (opt) {
+            case 'L': power2  = stoi(optarg); break;
+            case 'T': temp    = stod(optarg); break;
+            case 'N': nsweeps = stoi(optarg); break;
+            case 'b':
+                if (string(optarg) == "obc")      { obc = true;  bc_set = true; }
+                else if (string(optarg) == "pbc") { obc = false; bc_set = true; }
+                else {
+                    fmt::print(stderr, "Error: --bc must be 'obc' or 'pbc'.\n");
+                    return -1;
+                }
+                break;
+            case 't': run_tag = optarg; break;
+            case 'o': outfile = optarg; break;
+            case 's': seed    = stoul(optarg); break;
+            case 'h': print_usage(argv[0]); return 0;
+            default:  print_usage(argv[0]); return -1;
+        }
     }
-    int power2 = stoi(argv[1]);
-    if(power2 < 6){
-        fmt::print(stderr, "Power of 2 for grid size must be a positive integer greater than or equal to 6.\n");
-        return -1;
-    }
-    double temp = stod(argv[2]);
-    if(temp <= 0.0){
-        fmt::print(stderr, "Temperature must be positive.\n");
-        return -1;
-    }
-    int nsweeps = stoi(argv[3]);
-    if(nsweeps <= 0){
-        fmt::print(stderr, "Number of sweeps must be positive.\n");
-        return -1;
-    }
-    bool obc = false;
-    if(string(argv[4]) == "obc"){
-        obc = true;
-        fmt::println("Using open boundary conditions.");
-    }
-    else if(string(argv[4]) == "pbc"){
-        obc = false;
-        fmt::println("Using periodic boundary conditions.");
-    }
-    else{
-        fmt::print(stderr, "Invalid boundary condition. Use 'obc' or 'pbc'.\n");
-        return -1;
-    }
-    if(argc == 6){
-        fmt::println("Run tag: {}", argv[5]);
-    }
-    //run_tag used for distinguishing different runs, can be used in filename or just printed out
-    //default is empty string
-    string run_tag = (argc == 6) ? argv[5] : "tagless";
+    /* validation */
+    bool ok = true;
+    if (power2 < 6)   { fmt::print(stderr, "Error: -L must be >= 6.\n");   ok = false; }
+    if (temp   <= 0)  { fmt::print(stderr, "Error: -T must be > 0.\n");    ok = false; }
+    if (nsweeps <= 0) { fmt::print(stderr, "Error: -N must be > 0.\n");    ok = false; }
+    if (!bc_set)      { fmt::print(stderr, "Error: -b is required.\n");    ok = false; }
+    if (!ok) { print_usage(argv[0]); return -1; }
 
     /* setup */
     DataBlockShared d;
@@ -72,8 +95,7 @@ int main(int argc, char** argv){
     int nblocks = (tileStateCount + nthreads - 1) / nthreads;
     //curandStatePhilox4_32_10_t* d_states;
     cudaMalloc(&d.state, tileStateCount * sizeof(curandStatePhilox4_32_10_t));
-    std::random_device rd;
-    initCurand<<<nblocks, nthreads>>>(d.state, 42);
+    initCurand<<<nblocks, nthreads>>>(d.state, seed);
     cudaDeviceSynchronize();
 
     /* annealing */
@@ -168,7 +190,7 @@ int main(int argc, char** argv){
     printBlockResult(res_E, std::cout, "E");
     printBlockResult(res_E2, std::cout, "E2");
 
-    std::string filename = "master_results_energy.csv";
+    std::string filename = outfile;
     std::ofstream fileout;
     std::ifstream infile(filename);
     bool write_header = !infile.good();
