@@ -11,6 +11,14 @@
 #include <fmt/ostream.h>
 #include <getopt.h>
 
+bool g_verbose = false;
+
+template<typename... Args>
+void vprint(fmt::format_string<Args...> fmt_str, Args&&... args) {
+    if (g_verbose)
+        fmt::println(stderr, fmt_str, std::forward<Args>(args)...);
+}
+
 static void print_usage(const char* prog) {
     fmt::print(stderr,
         "Usage: {} -L <log2_size> -T <temp> -N <nsweeps> -b <obc|pbc> "
@@ -21,7 +29,8 @@ static void print_usage(const char* prog) {
         "  -b, --bc         Boundary conditions: obc or pbc\n"
         "  -t, --tag        Run tag for output CSV  [default: tagless]\n"
         "  -o, --output     Output CSV filename     [default: master_results_energy.csv]\n"
-        "  -s, --seed       PRNG seed               [default: 42]\n",
+        "  -s, --seed       PRNG seed               [default: 42]\n"
+        "  -v, --verbose    Enable verbose output   [default: false]\n",
         prog);
 }
 
@@ -43,11 +52,12 @@ int main(int argc, char** argv){
         {"tag",       required_argument, nullptr, 't'},
         {"output",    required_argument, nullptr, 'o'},
         {"seed",      required_argument, nullptr, 's'},
+        {"verbose",   no_argument,       nullptr, 'v'},
         {"help",      no_argument,       nullptr, 'h'},
         {nullptr,     0,                 nullptr,  0 }
     };
     int opt;
-    while ((opt = getopt_long(argc, argv, "L:T:N:b:t:o:s:h", long_opts, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "L:T:N:b:t:o:s:vh", long_opts, nullptr)) != -1) {
         switch (opt) {
             case 'L': power2  = stoi(optarg); break;
             case 'T': temp    = stod(optarg); break;
@@ -63,6 +73,7 @@ int main(int argc, char** argv){
             case 't': run_tag = optarg; break;
             case 'o': outfile = optarg; break;
             case 's': seed    = stoul(optarg); break;
+            case 'v': g_verbose = true; break;
             case 'h': print_usage(argv[0]); return 0;
             default:  print_usage(argv[0]); return -1;
         }
@@ -81,13 +92,14 @@ int main(int argc, char** argv){
     int subSize = size/2;
     int Len = size * size;
     int subLen = subSize * subSize;
-    fmt::println(cerr, "Setting up");
+    vprint("Setting up");
     cudaMalloc(&d.lattice, Len * sizeof(int));
     d.size = size;
     d.Len = Len;
     d.subLen = subLen;
     d.subSize = subSize;
     d.temp = temp;
+    vprint("Allocated lattice of size {}x{} (Len = {}, subLen = {})", size, size, Len, subLen);
     //curand state init
     int tileStateCount = Len / 2;
     int nthreads = tileStateCount;
@@ -97,10 +109,12 @@ int main(int argc, char** argv){
     cudaMalloc(&d.state, tileStateCount * sizeof(curandStatePhilox4_32_10_t));
     initCurand<<<nblocks, nthreads>>>(d.state, seed);
     cudaDeviceSynchronize();
+    vprint("Initialized curand states");
 
     /* annealing */
-    fmt::println(cerr, "Initializing lattice at T = {:.4f}", temp);
+    vprint("Temperature: T = {:.4f}", temp);
     if(temp <= (double)(CRIT_TEMP)){
+        vprint("Cold start: T <= Tc, initializing all spins up and annealing", temp);
         initColdLatticeKernel<<<nblocks, nthreads>>>(d.lattice, Len);
         cudaDeviceSynchronize();
         if(obc){
@@ -111,6 +125,7 @@ int main(int argc, char** argv){
         }
     }
     else{
+        vprint("Hot start: T > Tc, initializing random spins", temp);
         initLatticeKernel<<<nblocks, nthreads>>>(d.lattice, Len, d.state);
         cudaDeviceSynchronize();
     }
@@ -124,6 +139,7 @@ int main(int argc, char** argv){
     cudaMemcpyToSymbol(d_expTable, expTable, 9 * sizeof(float));
 
     /* thermalization */
+    vprint("Starting thermalization");
     ThermalizationResult therm_result;
     if(obc){
         therm_result = thermalize<Open>(&d);
@@ -143,14 +159,14 @@ int main(int argc, char** argv){
     int *energy = new int[nsweeps];
 
     /* simulation/measure */
-    fmt::println("Measurement phase");
+    vprint("Measurement phase");
     if(obc){
         blockSweepKernelShared<Open>(&d, nsweeps);
     }
     else{
         blockSweepKernelShared<Periodic>(&d, nsweeps);
     }
-    fmt::println("Measurement completed. Retrieving data...");
+    vprint("Measurement completed. Retrieving data...");
     //retrieve d_mag and d_energy
     checkCuda(cudaMemcpy(magnetization, d.magnetization, nsweeps * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy magnetization from device to host");
     checkCuda(cudaMemcpy(energy, d.energy, nsweeps * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy energy from device to host");
@@ -210,12 +226,14 @@ int main(int argc, char** argv){
         res_E2.mean, res_E2.error, res_E2.tau_int
     );
     fileout.close();
-    fmt::println("Data saved to {}.", filename);
+    vprint("Data saved to {}.", filename);
     /* cleanup */
     delete[] magnetization;
+    delete[] energy;
     cudaFree(d.lattice);
     cudaFree(d.state);
     cudaFree(d.magnetization);
+    cudaFree(d.energy);
 
     return 0;
 }
