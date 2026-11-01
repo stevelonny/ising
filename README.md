@@ -58,7 +58,7 @@ make run_hotstart.x     # builds run_hotstart.x
 	- For measurement it uses `blockSweepKernel` to perform block sweeps and writes summary statistics to a `.dat` file.
 
 - [run_shared.cu](run_shared.cu): host program for launching experiments (uses `ising_shared.hpp`). Notes:
-	- Parses arguments: `<power2> <T> <nsweeps> <obc|pbc> [run_tag]` (requires larger minimum `power2`).
+	- Parses arguments: `./run_shared.x -L <log2_size> -T <temp> -N <nsweeps> -b <obc|pbc> [-t <tag>] [-o <output.csv>] [-s <seed>] [-v]`.
 	- Uses `updateTileKernel` with shared memory
     - Simulation:
         - Anneal phase of 1000 sweeps
