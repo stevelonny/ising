@@ -61,8 +61,8 @@ bool converged(
     double unc{std::sqrt(currResult.error * currResult.error + prevResult.error * prevResult.error)};
     double scale{std::max(
         std::abs(currResult.mean),
-        std::abs(prevResult.mean),
-        1.0)
+        std::abs(prevResult.mean))
+        //,1.0)
     };
     double relDiff{diff/scale};
 
@@ -72,7 +72,7 @@ bool converged(
 template<BoundaryCondition BC>
 ThermalizationResult thermalize(
     DataBlockShared *d,
-    int windowSize = 2048,
+    int windowSize = 512,
     int maxSweeps = MAX_THERMALIZATION_SWEEPS,
     int requiredConsecutiveWindows = 3
 ){
@@ -86,21 +86,25 @@ ThermalizationResult thermalize(
     int nWindows{0};
     int maxLevels{8};
     //init mag and energy
-    cudaMalloc(d->magnetization, windowSize * sizeof(int));
-    cudaMalloc(d->energy, windowSize * sizeof(int));
-
+    cudaMalloc(&d->magnetization, windowSize * sizeof(int));
+    cudaMalloc(&d->energy, windowSize * sizeof(int));
+    cudaDeviceSynchronize();
     int* magnetization = new int[windowSize];
     int* energy = new int[windowSize];
     std::vector<double> absMag_data(windowSize);
     std::vector<double> m2_data(windowSize);
     std::vector<double> energy_data(windowSize);
 
+    fmt::println(
+        "{:<5}{:<15}{:<15}{:<15}{:<15}{:<15}{:<15}",
+        "Win", "absMag", "err", "m2", "err", "energy", "err"
+    );
     while(consecutiveWindows < requiredConsecutiveWindows && nWindows < maxWindows){
         cudaMemset(d->magnetization, 0, windowSize * sizeof(int));
         cudaMemset(d->energy, 0, windowSize * sizeof(int));
+        cudaDeviceSynchronize();
         //update
         blockSweepKernelShared<BC>(d, windowSize);
-        nWindows++;
         //compute magnetization and energy
         checkCuda(
             cudaMemcpy(magnetization, d->magnetization, windowSize * sizeof(int), cudaMemcpyDeviceToHost),
@@ -118,6 +122,10 @@ ThermalizationResult thermalize(
         BlockResult absMag = calculateBlockedError(absMag_data, maxLevels);
         BlockResult m2 = calculateBlockedError(m2_data, maxLevels);
         BlockResult energyRes = calculateBlockedError(energy_data, maxLevels);
+        fmt::println(cerr,
+            "{:<5}{:<15.5f}{:<15.5f}{:<15.5f}{:<15.5f}{:<15.5f}{:<15.5f}",
+            nWindows, absMag.mean, absMag.error, m2.mean, m2.error, energyRes.mean, energyRes.error
+        );
         if(havePreviousWindow){
             bool absMagConverged = converged(prevAbsMagResult, absMag);
             bool m2Converged = converged(prevM2Result, m2);
@@ -133,6 +141,7 @@ ThermalizationResult thermalize(
         prevM2Result = m2;
         prevEnergyResult = energyRes;
         havePreviousWindow = true;
+        nWindows++;
     }
     ThermalizationResult result;
     result.thermalized = (consecutiveWindows >= requiredConsecutiveWindows);

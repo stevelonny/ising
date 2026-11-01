@@ -87,11 +87,11 @@ KernelConfig kernelConfig(int size)
     KernelConfig config;
 
     dim3 block(TILE_DIM_X / 2, TILE_DIM_Y);
-    int n_TilesRow = size / TILE_DIM_X;
+    int n_TilesRow = size / TILE_DIM_X; //number of tiles per row (each tile is blockDimX*2 pixels wide or TILE_DIM_X pixels wide)
     int total_tiles = n_TilesRow * (size / TILE_DIM_Y);
     dim3 grid(total_tiles / 2);
-    int tileWidth = TILE_DIM_X + 2;
-    int tileHeight = TILE_DIM_Y + 2;
+    int tileWidth = TILE_DIM_X + 2;     //tile size in pixels (halo added in kernel)
+    int tileHeight = TILE_DIM_Y + 2;    //tile size in pixels (halo added in kernel)
     size_t shared_mem_bytes = (tileWidth * tileHeight) * sizeof(int);
     config.block = block;
     config.grid = grid;
