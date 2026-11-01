@@ -50,6 +50,7 @@ struct KernelConfig {
     dim3 block;
     dim3 grid;
     size_t shared_mem_bytes;
+    int n_TilesRow;
 };
 
 #ifndef __INITIALIZE_CURAND__
@@ -60,6 +61,7 @@ __global__ void initCurand(curandStatePhilox4_32_10_t *state, unsigned long seed
 }
 #endif
 
+//random lattice initialization kernel
 __global__ void initLatticeKernel(int* lattice, int len, curandStatePhilox4_32_10_t *state){
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     if(id >= len / 2) return; //only subLen threads run this
@@ -73,6 +75,7 @@ __global__ void initLatticeKernel(int* lattice, int len, curandStatePhilox4_32_1
     state[id] = localState;
 }
 
+//cold(+1) lattice initialization kernel
 __global__ void initColdLatticeKernel(int* lattice, int len){
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     if(id >= len) return;
@@ -85,6 +88,8 @@ KernelConfig kernelConfig(int size)
     const int TILE_DIM_X = __TILE_DIM_X__;
     const int TILE_DIM_Y = __TILE_DIM_Y__;
     KernelConfig config;
+
+    config.n_TilesRow = size / TILE_DIM_X;
 
     dim3 block(TILE_DIM_X / 2, TILE_DIM_Y);
     int n_TilesRow = size / TILE_DIM_X; //number of tiles per row (each tile is blockDimX*2 pixels wide or TILE_DIM_X pixels wide)
@@ -210,6 +215,7 @@ __global__ void updateTileKernel(int* lattice, int size, int color, int n_TilesR
     __syncthreads();
 }
 
+//kernel updates the lattice with reduction for magnetization
 template<BoundaryCondition BC>
 __global__ void updateTileKernel(int* lattice, int size, int color, int n_TilesRow, int* d_mag_sweep, curandStatePhilox4_32_10_t *state){
     
@@ -339,6 +345,7 @@ __global__ void updateTileKernel(int* lattice, int size, int color, int n_TilesR
 
 }
 
+//kernel updates the lattice with reduction for magnetization and energy
 template<BoundaryCondition BC>
 __global__ void updateTileKernel(
     int* lattice, int size, int color, int n_TilesRow,
@@ -492,7 +499,7 @@ __global__ void updateTileKernel(
 
 }
 
-/* Used in the cooperative launch version */
+//kernel for cooperative groups
 template<BoundaryCondition BC>
 __device__ void updateTile(int* lattice, int size, int color, int tile_id, int n_TilesRow, int* d_mag_sweep,  int* s_tile_raw, curandStatePhilox4_32_10_t *state){
     
@@ -558,7 +565,8 @@ __device__ void updateTile(int* lattice, int size, int color, int tile_id, int n
                 s_tile_raw[sy*stride + sx_w-1] +    //left
                 s_tile_raw[sy*stride + sx_w+1];     //right
     int spin_w = s_tile_raw[sy*stride + sx_w];
-    int exp_idx_w = ((2*spin_w*sum_w) + 8) / 4; //need to fix
+    //int exp_idx_w = ((2*spin_w*sum_w) + 8) / 4; //need to fix
+    int exp_idx_w = spin_w*sum_w + 4;
     
     if(curand_uniform(&threadState) < d_expTable[exp_idx_w]){
         spin_w *= -1;
@@ -573,7 +581,8 @@ __device__ void updateTile(int* lattice, int size, int color, int tile_id, int n
                 s_tile_raw[sy*stride + sx_b-1] +    //left
                 s_tile_raw[sy*stride + sx_b+1];     //right
     int spin_b = s_tile_raw[sy*stride + sx_b];
-    int exp_idx_b = ((2*spin_b*sum_b) + 8) / 4;
+    //int exp_idx_b = ((2*spin_b*sum_b) + 8) / 4;
+    int exp_idx_b = spin_b*sum_b + 4;
     
     if(curand_uniform(&threadState) < d_expTable[exp_idx_b]){
         spin_b *= -1;
@@ -615,6 +624,7 @@ __device__ void updateTile(int* lattice, int size, int color, int tile_id, int n
 
 }
 
+//kernel launcher for cooperative groups
 template<BoundaryCondition BC>
 __global__ void cooperativeUpdateTileKernel(DataBlockShared d, int blocksweeps, int totalTilesPerColor){
     cg::grid_group grid = cg::this_grid();
@@ -627,12 +637,12 @@ __global__ void cooperativeUpdateTileKernel(DataBlockShared d, int blocksweeps, 
     for(int s{0}; s<blocksweeps; s++){
         //each tile update will need to be strided
         /* red pass */
-        for(int tile_id{blockIdx.x}; tile_id < totalTilesPerColor; tile_id += gridDim.x){
+        for(size_t tile_id{blockIdx.x}; tile_id < totalTilesPerColor; tile_id += gridDim.x){
             updateTile<BC>(d.lattice, d.size, 0, tile_id, n_TilesRow, &d.magnetization[s], s_tile_raw, d.state);
         }
         grid.sync();
         /* blue pass */
-        for(int tile_id{blockIdx.x}; tile_id < totalTilesPerColor; tile_id += gridDim.x){
+        for(size_t tile_id{blockIdx.x}; tile_id < totalTilesPerColor; tile_id += gridDim.x){
             updateTile<BC>(d.lattice, d.size, 1, tile_id, n_TilesRow, &d.magnetization[s], s_tile_raw, d.state);
         }
         grid.sync();
@@ -640,6 +650,7 @@ __global__ void cooperativeUpdateTileKernel(DataBlockShared d, int blocksweeps, 
 
 }
 
+//launches cooperative group kernel
 template<BoundaryCondition BC>
 void launchCooperativeUpdateTileKernel(DataBlockShared* d, int blockSweeps){
     const int TILE_DIM_X = __TILE_DIM_X__;
@@ -706,34 +717,25 @@ void launchCooperativeUpdateTileKernel(DataBlockShared* d, int blockSweeps){
 //old remains of old blocking implementation
 template<BoundaryCondition BC>
 void blockSweepKernelShared(DataBlockShared* d, int blockSweeps) {
-    const int TILE_DIM_X = __TILE_DIM_X__;
-    const int TILE_DIM_Y = __TILE_DIM_Y__;
-
-    dim3 block(TILE_DIM_X/2, TILE_DIM_Y);
-    int n_TilesRow = d->size/TILE_DIM_X;
-    int total_tiles = n_TilesRow * (d->size/TILE_DIM_Y);
-    dim3 grid(total_tiles/2);
-    int tileWidth = TILE_DIM_X + 2;
-    int tileHeight = TILE_DIM_Y + 2;
-    size_t shared_mem_bytes = (tileWidth*tileHeight) * sizeof(int);
+    KernelConfig config = kernelConfig(d->size);
 
     for(int s{0}; s<blockSweeps; s++){
         /* red pass */
-        updateTileKernel<BC><<<grid, block, shared_mem_bytes>>>(
+        updateTileKernel<BC><<<config.grid, config.block, config.shared_mem_bytes>>>(
             d->lattice, 
             d->size, 
             0,
-            n_TilesRow, 
+            config.n_TilesRow, 
             &d->magnetization[s],
             &d->energy[s],
             d->state
         );
         /* blue pass */        
-        updateTileKernel<BC><<<grid, block, shared_mem_bytes>>>(
+        updateTileKernel<BC><<<config.grid, config.block, config.shared_mem_bytes>>>(
             d->lattice, 
             d->size, 
             1,
-            n_TilesRow, 
+            config.n_TilesRow, 
             &d->magnetization[s],
             &d->energy[s],
             d->state
