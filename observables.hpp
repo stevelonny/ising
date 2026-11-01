@@ -71,7 +71,7 @@ BlockResult calculateBlockedError(const std::vector<double>& data, int max_level
 }
 
 /* print functions */
-void printBlockResult(const BlockResult& result, std::ofstream& fileout, const std::string& obs_name){
+void printBlockResult(const BlockResult& result, std::ostream& fileout, const std::string& obs_name){
     // obs_name, lv, n_blocks, mean, error, variance
     for(int i{0}; i<result.n_blocks_per_level.size(); i++){
         fmt::println(
