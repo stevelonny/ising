@@ -40,7 +40,7 @@ for ((run=1; run<=NUM_RUNS; run++)); do
         for p in "${POWERS[@]}"; do
             size=$((1 << p))
             # Execute the pre-compiled binary
-            # Usage: ./run_shared.x -L <log2_size> -T <temp> -N <nsweeps> -b <obc|pbc> [-t <tag>] [-o <output.csv>] [-s <seed>]
+            # Usage: ./run_shared.x -L <log2_size> -T <temp> -N <nsweeps> -b <obc|pbc> [-t <tag>] [-o <output.csv>] [-s <seed>] [-v]
             ./run_shared.x -L $p -T $formatted_temp -N $NSWEEPS -b $BC -t $TAG
             
         done
