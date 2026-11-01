@@ -433,12 +433,6 @@ __global__ void updateTileKernel(
     int spin_b = s_tile_raw[sy*stride + sx_b];
     //int exp_idx_b = ((2*spin_b*sum_b) + 8) / 4;
     int exp_idx_b = spin_b*sum_b + 4;
-    
-    //save into registers nbs for energy reduction
-    int nb_up_w     = s_tile_raw[(sy-1)*stride + sx_w];
-    int nb_right_w  = s_tile_raw[sy*stride + sx_w+1];
-    int nb_up_b     = s_tile_raw[(sy-1)*stride + sx_b];
-    int nb_right_b  = s_tile_raw[sy*stride + sx_b+1];
 
     if(curand_uniform(&threadState) < d_expTable[exp_idx_b]){
         spin_b *= -1;
@@ -463,6 +457,11 @@ __global__ void updateTileKernel(
     /* reduction */
     if(color == 1)
     {
+        //save into registers nbs for energy reduction
+        int nb_up_w     = s_tile_raw[(sy-1)*stride + sx_w];
+        int nb_right_w  = s_tile_raw[sy*stride + sx_w+1];
+        int nb_up_b     = s_tile_raw[(sy-1)*stride + sx_b];
+        int nb_right_b  = s_tile_raw[sy*stride + sx_b+1];
         //magnetization
         int tMag = spin_w + spin_b;
         int* s_reduce = s_tile_raw;
