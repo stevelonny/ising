@@ -43,7 +43,8 @@ int main(int argc, char** argv){
     bool      bc_set   = false;
     string    run_tag  = "tagless";
     string    outfile  = "master_results.csv";
-    unsigned long seed = 42;
+    std::random_device rd;
+    unsigned long seed = rd();
     static const struct option long_opts[] = {
         {"log2-size", required_argument, nullptr, 'L'},
         {"temp",      required_argument, nullptr, 'T'},
@@ -109,7 +110,7 @@ int main(int argc, char** argv){
     cudaMalloc(&d.state, tileStateCount * sizeof(curandStatePhilox4_32_10_t));
     initCurand<<<nblocks, nthreads>>>(d.state, seed);
     cudaDeviceSynchronize();
-    vprint("Initialized curand states");
+    vprint("Initialized curand states with seed\n{}", seed);
 
     /* annealing */
     vprint("Temperature: T = {:.4f}", temp);
@@ -213,17 +214,18 @@ int main(int argc, char** argv){
     infile.close();
 
     fileout.open(filename, std::ios_base::app);
-    if(write_header) fmt::println(fileout, "L,T,run_tag,is_thermalized,M_abs,err_M_abs,tau_M_abs,M2,err_M2,tau_M2,M4,err_M4,tau_M4,E,err_E,tau_E,E2,err_E2,tau_E2");
+    if(write_header) fmt::println(fileout, "L,T,run_tag,is_thermalized,M_abs,err_M_abs,tau_M_abs,M2,err_M2,tau_M2,M4,err_M4,tau_M4,E,err_E,tau_E,E2,err_E2,tau_E2,seed");
     
     fmt::println(
         fileout,
-        "{},{:.4f},{},{},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f}",
+        "{},{:.4f},{},{},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f}{}",
         size, temp, run_tag, (is_thermalized ? 1 : 0),
         res_M_abs.mean, res_M_abs.error, res_M_abs.tau_int,
         res_M2.mean, res_M2.error, res_M2.tau_int,
         res_M4.mean, res_M4.error, res_M4.tau_int,
         res_E.mean, res_E.error, res_E.tau_int,
-        res_E2.mean, res_E2.error, res_E2.tau_int
+        res_E2.mean, res_E2.error, res_E2.tau_int,
+        seed
     );
     fileout.close();
     vprint("Data saved to {}.", filename);
