@@ -58,7 +58,6 @@ int main(int argc, char** argv){
     int subSize = size/2;
     int Len = size * size;
     int subLen = subSize * subSize;
-    int* d_lattice;
     fmt::println(cerr, "Setting up");
     cudaMalloc(&d.lattice, Len * sizeof(int));
     d.size = size;
@@ -139,7 +138,6 @@ int main(int argc, char** argv){
     vector<double> M_quad(nsweeps);
     vector<double> E(nsweeps);
     vector<double> E_sq(nsweeps);
-    double mean_M4 = 0.0;
 
     for(int i{0}; i<nsweeps; ++i){
         double m = (double)magnetization[i];
