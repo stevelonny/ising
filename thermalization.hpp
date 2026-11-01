@@ -13,7 +13,6 @@ template<BoundaryCondition BC>
 void anneal(
     DataBlockShared *d, double endTemp, double startTemp = 5.0, int annealSweeps = 5000)
 {
-    fmt::println("Annealing phase (annealing T: {} -> {})", startTemp, endTemp);
     double beta_start = 1.0 / startTemp;
     double beta_end = 1.0 / endTemp;
     int sweep = 0;
@@ -76,7 +75,6 @@ ThermalizationResult thermalize(
     int maxSweeps = MAX_THERMALIZATION_SWEEPS,
     int requiredConsecutiveWindows = 3
 ){
-    fmt::println("Thermalization phase (T = {})", d->temp);
     int consecutiveWindows{0};
     bool havePreviousWindow{false};
     BlockResult prevAbsMagResult;
@@ -95,7 +93,7 @@ ThermalizationResult thermalize(
     std::vector<double> m2_data(windowSize);
     std::vector<double> energy_data(windowSize);
 
-    fmt::println(
+    fmt::println(stderr,
         "{:<5}{:<15}{:<15}{:<15}{:<15}{:<15}{:<15}",
         "Win", "absMag", "err", "m2", "err", "energy", "err"
     );
