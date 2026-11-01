@@ -22,7 +22,7 @@ void vprint(fmt::format_string<Args...> fmt_str, Args&&... args) {
 static void print_usage(const char* prog) {
     fmt::print(stderr,
         "Usage: {} -L <log2_size> -T <temp> -N <nsweeps> -b <obc|pbc> "
-        "[-t <tag>] [-o <output.csv>] [-s <seed>]\n\n"
+        "[-t <tag>] [-o <output.csv>] [-s <seed>] [-v]\n\n"
         "  -L, --log2-size  Power of 2 for grid size (integer >= 6)\n"
         "  -T, --temp       Temperature (float > 0)\n"
         "  -N, --nsweeps    Number of measurement sweeps (int > 0)\n"
