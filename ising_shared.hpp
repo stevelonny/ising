@@ -434,12 +434,17 @@ __global__ void updateTileKernel(
     //int exp_idx_b = ((2*spin_b*sum_b) + 8) / 4;
     int exp_idx_b = spin_b*sum_b + 4;
     
+    //save into registers nbs for energy reduction
+    int nb_up_w     = s_tile_raw[(sy-1)*stride + sx_w];
+    int nb_right_w  = s_tile_raw[sy*stride + sx_w+1];
+    int nb_up_b     = s_tile_raw[(sy-1)*stride + sx_b];
+    int nb_right_b  = s_tile_raw[sy*stride + sx_b+1];
+
     if(curand_uniform(&threadState) < d_expTable[exp_idx_b]){
         spin_b *= -1;
         s_tile_raw[sy*stride + sx_b] = spin_b;
     }
     __syncthreads();
-
     state[stateIdx] = threadState;
     __syncthreads();
 
@@ -476,11 +481,7 @@ __global__ void updateTileKernel(
         }
         __syncthreads();
         //energy
-        int rightdown_w = s_tile_raw[(sy-1)*stride + sx_w] +    //up 
-                          s_tile_raw[sy*stride + sx_w+1];       //right
-        int rightdown_b = s_tile_raw[(sy-1)*stride + sx_b] +    //up
-                          s_tile_raw[sy*stride + sx_b+1];       //right
-        int tEnergy = - spin_w * rightdown_w - spin_b * rightdown_b;
+        int tEnergy = - spin_w * (nb_up_w+nb_right_w) - spin_b * (nb_up_b+nb_right_b);
         s_reduce[tid] = tEnergy;
         __syncthreads();
 
