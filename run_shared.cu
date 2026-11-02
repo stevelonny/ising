@@ -196,23 +196,24 @@ int main(int argc, char** argv){
     BlockResult res_M4 = calculateBlockedError(M_quad);
     BlockResult res_E = calculateBlockedError(E);
     BlockResult res_E2 = calculateBlockedError(E_sq);
-
-    fmt::println(std::cout,
+    std::string filename = fmt::format("{}_L{}_T{:.4f}_S{}_{}.dat", outfile, size, temp, seed, run_tag);
+    std::ofstream filediag;
+    filediag.open(filename);
+    fmt::println(filediag,
             "{:<10}{:<3}{:<10}{:<15}{:<15}{:<15}",
             "obs", "lv", "n_blocks", "mean", "error", "variance");
-    printBlockResult(res_M_abs, std::cout, "M_abs");
-    printBlockResult(res_M2, std::cout, "M2");
-    printBlockResult(res_M4, std::cout, "M4");
-    printBlockResult(res_E, std::cout, "E");
-    printBlockResult(res_E2, std::cout, "E2");
+    printBlockResult(res_M_abs, filediag, "M_abs");
+    printBlockResult(res_M2, filediag, "M2");
+    printBlockResult(res_M4, filediag, "M4");
+    printBlockResult(res_E, filediag, "E");
+    printBlockResult(res_E2, filediag, "E2");
 
-    std::string filename = outfile;
     std::ofstream fileout;
-    std::ifstream infile(filename);
+    std::ifstream infile(outfile);
     bool write_header = !infile.good();
     infile.close();
 
-    fileout.open(filename, std::ios_base::app);
+    fileout.open(outfile, std::ios_base::app);
     if(write_header) fmt::println(fileout, "L,T,run_tag,is_thermalized,M_abs,err_M_abs,tau_M_abs,M2,err_M2,tau_M2,M4,err_M4,tau_M4,E,err_E,tau_E,E2,err_E2,tau_E2");
     
     fmt::println(
@@ -226,7 +227,7 @@ int main(int argc, char** argv){
         res_E2.mean, res_E2.error, res_E2.tau_int
     );
     fileout.close();
-    vprint("Data saved to {}.", filename);
+    vprint("Data saved to {}.", outfile);
     /* cleanup */
     delete[] magnetization;
     delete[] energy;
