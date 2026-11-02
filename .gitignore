@@ -6,3 +6,6 @@ old/
 *.dat
 logs*/
 data*/
+.venv/
+.vscode/
+__pycache__/
