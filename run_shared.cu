@@ -28,7 +28,7 @@ static void print_usage(const char* prog) {
         "  -N, --nsweeps    Number of measurement sweeps (int > 0)\n"
         "  -b, --bc         Boundary conditions: obc or pbc\n"
         "  -t, --tag        Run tag for output CSV  [default: tagless]\n"
-        "  -o, --output     Output CSV filename     [default: master_results_energy.csv]\n"
+        "  -o, --output     Output CSV filename     [default: master_results.csv]\n"
         "  -s, --seed       PRNG seed               [default: 42]\n"
         "  -v, --verbose    Enable verbose output   [default: false]\n",
         prog);
@@ -197,9 +197,9 @@ int main(int argc, char** argv){
     BlockResult res_M4 = calculateBlockedError(M_quad);
     BlockResult res_E = calculateBlockedError(E);
     BlockResult res_E2 = calculateBlockedError(E_sq);
-    std::string filename = fmt::format("{}_L{}_T{:.4f}_S{}_{}.dat", outfile, size, temp, seed, run_tag);
+    std::string filenamediag = fmt::format("{}_L{}_T{:.4f}_S{}_{}.dat", outfile, size, temp, seed, run_tag);
     std::ofstream filediag;
-    filediag.open(filename);
+    filediag.open(filenamediag);
     fmt::println(filediag,
             "{:<10}{:<3}{:<10}{:<15}{:<15}{:<15}",
             "obs", "lv", "n_blocks", "mean", "error", "variance");
@@ -208,23 +208,19 @@ int main(int argc, char** argv){
     printBlockResult(res_M4, filediag, "M4");
     printBlockResult(res_E, filediag, "E");
     printBlockResult(res_E2, filediag, "E2");
-
+    filediag.close();
+    
     std::ofstream fileout;
     std::ifstream infile(outfile);
     bool write_header = !infile.good();
     infile.close();
 
-<<<<<<< HEAD
     fileout.open(outfile, std::ios_base::app);
-    if(write_header) fmt::println(fileout, "L,T,run_tag,is_thermalized,M_abs,err_M_abs,tau_M_abs,M2,err_M2,tau_M2,M4,err_M4,tau_M4,E,err_E,tau_E,E2,err_E2,tau_E2");
-=======
-    fileout.open(filename, std::ios_base::app);
     if(write_header) fmt::println(fileout, "L,T,run_tag,is_thermalized,M_abs,err_M_abs,tau_M_abs,M2,err_M2,tau_M2,M4,err_M4,tau_M4,E,err_E,tau_E,E2,err_E2,tau_E2,seed");
->>>>>>> 512d578b720056fa0671032b3ded5f011a62347f
     
     fmt::println(
         fileout,
-        "{},{:.4f},{},{},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f}{}",
+        "{},{:.4f},{},{},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{}",
         size, temp, run_tag, (is_thermalized ? 1 : 0),
         res_M_abs.mean, res_M_abs.error, res_M_abs.tau_int,
         res_M2.mean, res_M2.error, res_M2.tau_int,

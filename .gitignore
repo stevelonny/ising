@@ -9,3 +9,6 @@ data*/
 .venv/
 .vscode/
 __pycache__/
+*.csv
+*.dat
+data/

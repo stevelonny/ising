@@ -11,7 +11,7 @@
 #   ./run_critical.sh [OPTIONS]
 #
 # Options (override via environment or positional args):
-#   -N <nsweeps>      Measurement sweeps per run     [default: 3000000]
+#   -N <nsweeps>      Measurement sweeps per run (overrides per-size defaults)
 #   -R <num_runs>     Independent runs per config    [default: 8]
 #   -b <bc>           Boundary conditions obc|pbc    [default: pbc]
 #   -o <outfile>      Output CSV file                [default: master_results.csv]
@@ -24,8 +24,8 @@
 set -euo pipefail
 
 # ---- defaults ------------------------------------------------
-NSWEEPS=3000000
-NUM_RUNS=8
+NSWEEPS=""   # empty = use per-size NSWEEPS_MAP; set via -N to override all sizes
+NUM_RUNS=1
 BC="pbc"
 OUTFILE="master_results.csv"
 
@@ -61,18 +61,27 @@ fi
 # ============================================================
 
 # Lattice sizes as log2(L): L = 2^p
+# p=6  ->   64x64
 # p=7  ->  128x128
 # p=8  ->  256x256
 # p=9  ->  512x512
-# p=10 -> 1024x1024
-POWERS=(7 8 9 10)
+POWERS=(6 7 8)
+
+# Per-size sweep counts (accounts for critical slowing down: tau ~ L^2.17).
+# The -N flag overrides all sizes with a single value when specified.
+declare -A NSWEEPS_MAP
+NSWEEPS_MAP[6]=5000000    #  64x64  — tau ~150,  
+NSWEEPS_MAP[7]=10000000   # 128x128 — tau ~700,
+NSWEEPS_MAP[8]=30000000   # 256x256 — tau ~3000
+NSWEEPS_MAP[9]=20000000   # 512x512 — tau ~8000
 
 # Critical temperature (exact 2D Ising on square lattice, J=1, k_B=1)
-TC=2.26918531421
+#TC=2.26918531421
+TC=2.269
 
 # Fine grid around Tc: from Tc-DELTA to Tc+DELTA in STEP increments
 # Using bc for precision; seq can lose digits near Tc
-DELTA=0.05          # half-width of temperature window
+DELTA=0.03          # half-width of temperature window
 STEP=0.005          # temperature spacing (adjust for finer/coarser grid)
 
 # ============================================================
@@ -96,7 +105,7 @@ echo "============================================================"
 echo " Binary        : ./run_shared.x"
 echo " Output CSV    : $OUTFILE"
 echo " Boundary cond : $BC"
-echo " Sweeps/run    : $NSWEEPS"
+echo " Sweeps/run    : ${NSWEEPS:-per-size (64→5M, 128→10M, 256→30M, 512→80M)}"
 echo " Ind. runs     : $NUM_RUNS"
 echo " Lattice sizes : L = 2^{${POWERS[*]}}"
 echo " Tc (exact)    : $TC"
@@ -127,15 +136,18 @@ for ((run=1; run<=NUM_RUNS; run++)); do
             L=$((1 << p))
             TOTAL=$((TOTAL + 1))
 
-            printf "  L=%-5d  T=%-10s  run=%d/%d  ... " "$L" "$t" "$run" "$NUM_RUNS"
+            # Use per-size sweep count unless -N was given
+            N="${NSWEEPS:-${NSWEEPS_MAP[$p]}}"
+
+            printf "  L=%-5d  T=%-10s  N=%-10d  run=%d/%d  ... " "$L" "$t" "$N" "$run" "$NUM_RUNS"
 
             # Each call appends one row to $OUTFILE
             if ./run_shared.x \
-                    -L "$p"       \
-                    -T "$t"       \
-                    -N "$NSWEEPS" \
-                    -b "$BC"      \
-                    -t "$TAG"     \
+                    -L "$p"  \
+                    -T "$t"  \
+                    -N "$N"  \
+                    -b "$BC" \
+                    -t "$TAG" \
                     -o "$OUTFILE" \
                     2>/dev/null; then
                 DONE=$((DONE + 1))

@@ -5,7 +5,7 @@
 #include "observables.hpp"
 
 #define CRIT_TEMP 2.26918531421
-#define MAX_THERMALIZATION_SWEEPS 16384
+#define MAX_THERMALIZATION_SWEEPS 262144
 
 /* annealing */
 
@@ -82,7 +82,7 @@ ThermalizationResult thermalize(
     BlockResult prevEnergyResult;
     int maxWindows {maxSweeps/windowSize};
     int nWindows{0};
-    int maxLevels{8};
+    int maxLevels{8}; //for obs estimation
     //init mag and energy
     cudaMalloc(&d->magnetization, windowSize * sizeof(int));
     cudaMalloc(&d->energy, windowSize * sizeof(int));
