@@ -114,21 +114,13 @@ int main(int argc, char** argv){
 
     /* annealing */
     vprint("Temperature: T = {:.4f}", temp);
-    if(temp <= (double)(CRIT_TEMP)){
-        vprint("Cold start: T <= Tc, initializing all spins up and annealing", temp);
-        initColdLatticeKernel<<<nblocks, nthreads>>>(d.lattice, Len);
-        cudaDeviceSynchronize();
-        if(obc){
-            anneal<Open>(&d, temp);
-        }
-        else{
-            anneal<Periodic>(&d, temp);
-        }
+    initLatticeKernel<<<nblocks, nthreads>>>(d.lattice, Len, d.state);
+    cudaDeviceSynchronize();
+    if(obc){
+        anneal<Open>(&d, temp);
     }
     else{
-        vprint("Hot start: T > Tc, initializing random spins", temp);
-        initLatticeKernel<<<nblocks, nthreads>>>(d.lattice, Len, d.state);
-        cudaDeviceSynchronize();
+        anneal<Periodic>(&d, temp);
     }
     cudaDeviceSynchronize();
 
@@ -143,10 +135,10 @@ int main(int argc, char** argv){
     vprint("Starting thermalization");
     ThermalizationResult therm_result;
     if(obc){
-        therm_result = thermalize<Open>(&d);
+        therm_result = thermalize<Open>(&d, 2048, MAX_THERMALIZATION_SWEEPS, 5);
     }
     else{
-        therm_result = thermalize<Periodic>(&d);
+        therm_result = thermalize<Periodic>(&d, 2048, MAX_THERMALIZATION_SWEEPS, 5);
     }
     cudaDeviceSynchronize();
     bool is_thermalized = therm_result.thermalized;

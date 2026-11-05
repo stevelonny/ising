@@ -65,7 +65,7 @@ bool converged(
     };
     double relDiff{diff/scale};
 
-    return (relDiff < relativeTolerance) || (diff < sigmaTolerance * unc); //use `||` to require only one
+    return (relDiff < relativeTolerance) && (diff < sigmaTolerance * unc); //use `||` to require only one
 }
 
 template<BoundaryCondition BC>
