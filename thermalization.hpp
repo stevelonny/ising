@@ -4,8 +4,12 @@
 #include "ising_shared.hpp"
 #include "observables.hpp"
 
+#ifndef CRIT_TEMP
 #define CRIT_TEMP 2.26918531421
+#endif
+#ifndef MAX_THERMALIZATION_SWEEPS
 #define MAX_THERMALIZATION_SWEEPS 262144
+#endif
 
 /* annealing */
 
@@ -54,14 +58,14 @@ struct ThermalizationResult{
 
 bool converged(
     const BlockResult& prevResult, const BlockResult& currResult,
-    double relativeTolerance = 0.05, double sigmaTolerance = 2.0
+    double relativeTolerance = 0.05, double sigmaTolerance = 3.0
 ){
     double diff{std::abs(currResult.mean - prevResult.mean)};
     double unc{std::sqrt(currResult.error * currResult.error + prevResult.error * prevResult.error)};
     double scale{std::max(
         std::abs(currResult.mean),
-        std::abs(prevResult.mean))
-        //,1.0)
+        std::abs(prevResult.mean),
+        1.0)
     };
     double relDiff{diff/scale};
 
@@ -73,7 +77,8 @@ ThermalizationResult thermalize(
     DataBlockShared *d,
     int windowSize = 512,
     int maxSweeps = MAX_THERMALIZATION_SWEEPS,
-    int requiredConsecutiveWindows = 3
+    int requiredConsecutiveWindows = 3,
+    std::ostream& verboseStream = std::cerr
 ){
     int consecutiveWindows{0};
     bool havePreviousWindow{false};
@@ -93,7 +98,7 @@ ThermalizationResult thermalize(
     std::vector<double> m2_data(windowSize);
     std::vector<double> energy_data(windowSize);
 
-    fmt::println(stderr,
+    fmt::println(verboseStream,
         "{:<5}{:<15}{:<15}{:<15}{:<15}{:<15}{:<15}",
         "Win", "absMag", "err", "m2", "err", "energy", "err"
     );
@@ -120,7 +125,7 @@ ThermalizationResult thermalize(
         BlockResult absMag = calculateBlockedError(absMag_data, maxLevels);
         BlockResult m2 = calculateBlockedError(m2_data, maxLevels);
         BlockResult energyRes = calculateBlockedError(energy_data, maxLevels);
-        fmt::println(cerr,
+        fmt::println(verboseStream,
             "{:<5}{:<15.5f}{:<15.5f}{:<15.5f}{:<15.5f}{:<15.5f}{:<15.5f}",
             nWindows, absMag.mean, absMag.error, m2.mean, m2.error, energyRes.mean, energyRes.error
         );

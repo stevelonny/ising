@@ -130,18 +130,24 @@ int main(int argc, char** argv){
         expTable[i] = exp(-(float)_deltaE[i] / temp);
     }
     cudaMemcpyToSymbol(d_expTable, expTable, 9 * sizeof(float));
+    cudaDeviceSynchronize();
 
     /* thermalization */
+    std::string filenamediag = fmt::format("{}_L{}_T{:.4f}_S{}_{}.dat", outfile, size, temp, seed, run_tag);
+    std::ofstream filediag;
+    filediag.open(filenamediag);
     vprint("Starting thermalization");
     ThermalizationResult therm_result;
+    int windowSize{std::max(4096, size * size / 64)};
     if(obc){
-        therm_result = thermalize<Open>(&d, 2048, MAX_THERMALIZATION_SWEEPS, 5);
+        therm_result = thermalize<Open>(&d, 2048, MAX_THERMALIZATION_SWEEPS, 3, filediag);
     }
     else{
-        therm_result = thermalize<Periodic>(&d, 2048, MAX_THERMALIZATION_SWEEPS, 5);
+        therm_result = thermalize<Periodic>(&d, 2048, MAX_THERMALIZATION_SWEEPS, 3, filediag);
     }
     cudaDeviceSynchronize();
     bool is_thermalized = therm_result.thermalized;
+    filediag.close(); //also used later, rememeber to reopen for writing
     fmt::println("Thermalization {} with {} sweeps", is_thermalized, therm_result.sweeps);
     /* interlude  B */
     checkCuda(cudaMalloc(&d.magnetization, nsweeps * sizeof(int)), "Failed to allocate magnetization on device");
@@ -189,9 +195,7 @@ int main(int argc, char** argv){
     BlockResult res_M4 = calculateBlockedError(M_quad);
     BlockResult res_E = calculateBlockedError(E);
     BlockResult res_E2 = calculateBlockedError(E_sq);
-    std::string filenamediag = fmt::format("{}_L{}_T{:.4f}_S{}_{}.dat", outfile, size, temp, seed, run_tag);
-    std::ofstream filediag;
-    filediag.open(filenamediag);
+    filediag.open(filenamediag); //reopen for writing
     fmt::println(filediag,
             "{:<10}{:<3}{:<10}{:<15}{:<15}{:<15}",
             "obs", "lv", "n_blocks", "mean", "error", "variance");
