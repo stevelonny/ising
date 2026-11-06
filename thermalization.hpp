@@ -62,11 +62,11 @@ bool converged(
 ){
     double diff{std::abs(currResult.mean - prevResult.mean)};
     double unc{std::sqrt(currResult.error * currResult.error + prevResult.error * prevResult.error)};
-    double scale{std::max(
+    double scale{std::max({
         std::abs(currResult.mean),
         std::abs(prevResult.mean),
-        1.0)
-    };
+        1.0
+    })};
     double relDiff{diff/scale};
 
     return (relDiff < relativeTolerance) && (diff < sigmaTolerance * unc); //use `||` to require only one
