@@ -138,7 +138,7 @@ int main(int argc, char** argv){
     filediag.open(filenamediag);
     vprint("Starting thermalization");
     ThermalizationResult therm_result;
-    int windowSize{std::max(4096, size * size / 64)};
+    //int windowSize{std::max(4096, size * size / 64)};
     if(obc){
         therm_result = thermalize<Open>(&d, 2048, MAX_THERMALIZATION_SWEEPS, 3, filediag);
     }

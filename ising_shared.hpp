@@ -324,23 +324,20 @@ __global__ void updateTileKernel(int* lattice, int size, int color, int n_TilesR
     }
     __syncthreads();
     /* reduction */
-    if(color == 1)
-    {
-        int tMag = spin_w + spin_b;
-        int* s_reduce = s_tile_raw;
-        s_reduce[tid] = tMag;
-        __syncthreads();
+    int tMag = spin_w + spin_b;
+    int* s_reduce = s_tile_raw;
+    s_reduce[tid] = tMag;
+    __syncthreads();
 
-        //parallel reduction in shared memory
-        for(int s{total_threads/2}; s>0; s/=2){
-            if(tid < s){
-                s_tile_raw[tid] += s_tile_raw[tid + s];
-            }
-            __syncthreads();
+    //parallel reduction in shared memory
+    for(int s{total_threads/2}; s>0; s/=2){
+        if(tid < s){
+            s_tile_raw[tid] += s_tile_raw[tid + s];
         }
-        if(tid == 0){
-            atomicAdd(d_mag_sweep, s_tile_raw[0]);
-        }
+        __syncthreads();
+    }
+    if(tid == 0){
+        atomicAdd(d_mag_sweep, s_tile_raw[0]);
     }
 
 }
@@ -455,47 +452,45 @@ __global__ void updateTileKernel(
     }
     __syncthreads();
     /* reduction */
-    if(color == 1)
-    {
-        //save into registers nbs for energy reduction
-        int nb_up_w     = s_tile_raw[(sy-1)*stride + sx_w];
-        int nb_right_w  = s_tile_raw[sy*stride + sx_w+1];
-        int nb_up_b     = s_tile_raw[(sy-1)*stride + sx_b];
-        int nb_right_b  = s_tile_raw[sy*stride + sx_b+1];
-        //magnetization
-        int tMag = spin_w + spin_b;
-        int* s_reduce = s_tile_raw;
-        s_reduce[tid] = tMag;
-        __syncthreads();
-
-        //parallel reduction in shared memory
-        for(int s{total_threads/2}; s>0; s/=2){
-            if(tid < s){
-                s_tile_raw[tid] += s_tile_raw[tid + s];
-            }
-            __syncthreads();
-        }
-        if(tid == 0){
-            atomicAdd(d_mag_sweep, s_tile_raw[0]);
-        }
-        __syncthreads();
-        //energy
-        int tEnergy = - spin_w * (nb_up_w+nb_right_w) - spin_b * (nb_up_b+nb_right_b);
-        s_reduce[tid] = tEnergy;
-        __syncthreads();
-
-        //parallel reduction in shared memory
-        for(int s{total_threads/2}; s>0; s/=2){
-            if(tid < s){
-                s_tile_raw[tid] += s_tile_raw[tid + s];
-            }
-            __syncthreads();
-        }
-        if(tid == 0){
-            atomicAdd(d_energy_sweep, s_tile_raw[0]);
+    //save into registers nbs for energy reduction
+    int nb_up_w     = s_tile_raw[(sy-1)*stride + sx_w];
+    int nb_right_w  = s_tile_raw[sy*stride + sx_w+1];
+    int nb_up_b     = s_tile_raw[(sy-1)*stride + sx_b];
+    int nb_right_b  = s_tile_raw[sy*stride + sx_b+1];
+    int tMag = spin_w + spin_b;
+    int tEnergy = - spin_w * (nb_up_w+nb_right_w) - spin_b * (nb_up_b+nb_right_b);
+    __syncthreads();
+    int* s_reduce = s_tile_raw;
+    s_reduce[tid] = tMag;
+    __syncthreads();
+    
+    //magnetization
+    //parallel reduction in shared memory
+    for(int s{total_threads/2}; s>0; s/=2){
+        if(tid < s){
+            s_tile_raw[tid] += s_tile_raw[tid + s];
         }
         __syncthreads();
     }
+    if(tid == 0){
+        atomicAdd(d_mag_sweep, s_tile_raw[0]);
+    }
+    __syncthreads();
+    //energy
+    s_reduce[tid] = tEnergy;
+    __syncthreads();
+
+    //parallel reduction in shared memory
+    for(int s{total_threads/2}; s>0; s/=2){
+        if(tid < s){
+            s_tile_raw[tid] += s_tile_raw[tid + s];
+        }
+        __syncthreads();
+    }
+    if(tid == 0){
+        atomicAdd(d_energy_sweep, s_tile_raw[0]);
+    }
+    __syncthreads();
 
 }
 
