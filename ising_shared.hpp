@@ -118,6 +118,49 @@ KernelConfig kernelConfig(int size)
     return config;
 }
 
+//read spin from global memory
+template<BoundaryCondition BC>
+__device__ inline int readSpin(const int* lattice, int size, int gx, int gy){
+    if(gx >= 0 && gx < size && gy >= 0 && gy < size){//inside lattice spins
+        return lattice[gy * size + gx];
+    }
+    else {//border spins
+        if constexpr (BC == Open){
+            return 0;
+        }
+        else if constexpr (BC == Periodic){//penalty
+            int wrapped_x = (gx + size) & (size - 1);
+            int wrapped_y = (gy + size) & (size - 1);
+            return lattice[wrapped_y * size + wrapped_x];
+        }
+        else if constexpr (BC == FixedUp){
+            return 1; //fixed up spins
+        }
+        return 0;
+    }
+}
+
+//read from global memory to shared
+template<BoundaryCondition BC>
+__device__ inline void loadSharedTile(
+    const int* lattice, int size, int globalXOrig, int globalYOrig,
+    int tileWidth, int tileHeight, int* s_tile_raw,
+    int stride, int tid, int total_threads)
+{
+    /* read from global memory */
+    int total_elements = (tileWidth+2) * (tileHeight+2);
+    for(int i{tid}; i<total_elements; i+=total_threads){
+        //indexing in the shared memory tile
+        int sy = i / stride;
+        int sx = i % stride;
+        int gx = globalXOrig + sx - 1;
+        int gy = globalYOrig + sy - 1;
+
+        s_tile_raw[sy * stride + sx] = readSpin<BC>(lattice, size, gx, gy);
+    }
+    __syncthreads();
+}
+
 //kernel updates the lattice without reduction
 template<BoundaryCondition BC>
 __global__ void updateTileKernel(int* lattice, int size, int color, int n_TilesRow, curandStatePhilox4_32_10_t *state){
@@ -148,34 +191,7 @@ __global__ void updateTileKernel(int* lattice, int size, int color, int n_TilesR
     //will need indexing for the tile sx, sy for accessing the halo
 
     /* read from global memory */
-    int total_elements = (tileWidth+2) * (tileHeight+2);
-    for(int i{tid}; i<total_elements; i+=total_threads){
-        //indexing in the shared memory tile
-        int sy = i / stride;
-        int sx = i % stride;
-        int gx = globalXOrig + sx - 1;
-        int gy = globalYOrig + sy - 1;
-        //default read = 0 for boundaries conditions
-        int val = 0;
-        if(gx >= 0 && gx < size && gy >= 0 && gy < size){//inside lattice spins
-            val = lattice[gy * size + gx];
-        }
-        else {//border spins
-            if constexpr (BC == Open){
-                val = 0;
-            }
-            else if constexpr (BC == Periodic){//penalty
-                int wrapped_x = (gx + size) & (size - 1);
-                int wrapped_y = (gy + size) & (size - 1);
-                val = lattice[wrapped_y * size + wrapped_x];
-            }
-            else if constexpr (BC == FixedUp){
-                val = 1; //fixed up spins
-            }
-        }
-        s_tile_raw[sy * stride + sx] = val;
-    }
-    __syncthreads();
+    loadSharedTile<BC>(lattice, size, globalXOrig, globalYOrig, tileWidth, tileHeight, s_tile_raw, stride, tid, total_threads);
 
     /* interlude */
     int gy = globalYOrig + ty;
@@ -264,34 +280,7 @@ __global__ void updateTileKernel(int* lattice, int size, int color, int n_TilesR
     //will need indexing for the tile sx, sy for accessing the halo
 
     /* read from global memory */
-    int total_elements = (tileWidth+2) * (tileHeight+2);
-    for(int i{tid}; i<total_elements; i+=total_threads){
-        //indexing in the shared memory tile
-        int sy = i / stride;
-        int sx = i % stride;
-        int gx = globalXOrig + sx - 1;
-        int gy = globalYOrig + sy - 1;
-        //default read = 0 for boundaries conditions
-        int val = 0;
-        if(gx >= 0 && gx < size && gy >= 0 && gy < size){//inside lattice spins
-            val = lattice[gy * size + gx];
-        }
-        else {//border spins
-            if constexpr (BC == Open){
-                val = 0;
-            }
-            else if constexpr (BC == Periodic){//penalty
-                int wrapped_x = (gx + size) & (size - 1);
-                int wrapped_y = (gy + size) & (size - 1);
-                val = lattice[wrapped_y * size + wrapped_x];
-            }
-            else if constexpr (BC == FixedUp){
-                val = 1; //fixed up spins
-            }
-        }
-        s_tile_raw[sy * stride + sx] = val;
-    }
-    __syncthreads();
+    loadSharedTile<BC>(lattice, size, globalXOrig, globalYOrig, tileWidth, tileHeight, s_tile_raw, stride, tid, total_threads);
 
     /* interlude */
     int gy = globalYOrig + ty;
@@ -399,34 +388,7 @@ __global__ void updateTileKernel(
     //will need indexing for the tile sx, sy for accessing the halo
 
     /* read from global memory */
-    int total_elements = (tileWidth+2) * (tileHeight+2);
-    for(int i{tid}; i<total_elements; i+=total_threads){
-        //indexing in the shared memory tile
-        int sy = i / stride;
-        int sx = i % stride;
-        int gx = globalXOrig + sx - 1;
-        int gy = globalYOrig + sy - 1;
-        //default read = 0 for boundaries conditions
-        int val = 0;
-        if(gx >= 0 && gx < size && gy >= 0 && gy < size){//inside lattice spins
-            val = lattice[gy * size + gx];
-        }
-        else {//border spins
-            if constexpr (BC == Open){
-                val = 0;
-            }
-            else if constexpr (BC == Periodic){//penalty
-                int wrapped_x = (gx + size) & (size - 1);
-                int wrapped_y = (gy + size) & (size - 1);
-                val = lattice[wrapped_y * size + wrapped_x];
-            }
-            else if constexpr (BC == FixedUp){
-                val = 1; //fixed up spins
-            }
-        }
-        s_tile_raw[sy * stride + sx] = val;
-    }
-    __syncthreads();
+    loadSharedTile<BC>(lattice, size, globalXOrig, globalYOrig, tileWidth, tileHeight, s_tile_raw, stride, tid, total_threads);
 
     /* interlude */
     int gy = globalYOrig + ty;
