@@ -21,15 +21,15 @@ void vprint(fmt::format_string<Args...> fmt_str, Args&&... args) {
 
 static void print_usage(const char* prog) {
     fmt::print(stderr,
-        "Usage: {} -L <log2_size> -T <temp> -N <nsweeps> -b <obc|pbc> "
+        "Usage: {} -L <log2_size> -T <temp> -N <nsweeps> -b <obc|pbc|fixup> "
         "[-t <tag>] [-o <output.csv>] [-s <seed>] [-v]\n\n"
         "  -L, --log2-size  Power of 2 for grid size (integer >= 6)\n"
         "  -T, --temp       Temperature (float > 0)\n"
         "  -N, --nsweeps    Number of measurement sweeps (int > 0)\n"
-        "  -b, --bc         Boundary conditions: obc or pbc\n"
+        "  -b, --bc         Boundary conditions: obc or pbc or fixup\n"
         "  -t, --tag        Run tag for output CSV  [default: tagless]\n"
         "  -o, --output     Output CSV filename     [default: master_results.csv]\n"
-        "  -s, --seed       PRNG seed               [default: 42]\n"
+        "  -s, --seed       PRNG seed               [default: random]\n"
         "  -v, --verbose    Enable verbose output   [default: false]\n",
         prog);
 }
@@ -39,8 +39,9 @@ int main(int argc, char** argv){
     int       power2   = -1;
     double    temp     = -1.0;
     int       nsweeps  = -1;
-    bool      obc      = false;
+    BoundaryCondition bc = Periodic;
     bool      bc_set   = false;
+    string    bc_str   = "pbc";
     string    run_tag  = "tagless";
     string    outfile  = "master_results.csv";
     std::random_device rd;
@@ -64,10 +65,11 @@ int main(int argc, char** argv){
             case 'T': temp    = stod(optarg); break;
             case 'N': nsweeps = stoi(optarg); break;
             case 'b':
-                if (string(optarg) == "obc")      { obc = true;  bc_set = true; }
-                else if (string(optarg) == "pbc") { obc = false; bc_set = true; }
+                if      (string(optarg) == "obc")       { bc_set = true; bc = Open; bc_str = "obc"; }
+                else if (string(optarg) == "pbc")       { bc_set = true; bc = Periodic; bc_str = "pbc"; }
+                else if (string(optarg) == "fixup")     { bc_set = true; bc = FixedUp; bc_str = "fixup"; }
                 else {
-                    fmt::print(stderr, "Error: --bc must be 'obc' or 'pbc'.\n");
+                    fmt::print(stderr, "Error: --bc must be 'obc' or 'pbc' or 'fixup'.\n");
                     return -1;
                 }
                 break;
@@ -112,61 +114,51 @@ int main(int argc, char** argv){
     cudaDeviceSynchronize();
     vprint("Initialized curand states with seed\n{}", seed);
 
-    /* annealing */
-    vprint("Temperature: T = {:.4f}", temp);
-    initLatticeKernel<<<nblocks, nthreads>>>(d.lattice, Len, d.state);
-    cudaDeviceSynchronize();
-    if(obc){
-        anneal<Open>(&d, temp);
-    }
-    else{
-        anneal<Periodic>(&d, temp);
-    }
-    cudaDeviceSynchronize();
-
-    /* interlude A */
-    float expTable[9];
-    for(int i{0}; i<9; i++){
-        expTable[i] = exp(-(float)_deltaE[i] / temp);
-    }
-    cudaMemcpyToSymbol(d_expTable, expTable, 9 * sizeof(float));
-    cudaDeviceSynchronize();
-
-    /* thermalization */
+    /* dispatch */
     std::string filenamediag = fmt::format("{}_L{}_T{:.4f}_S{}_{}.dat", outfile, size, temp, seed, run_tag);
     std::ofstream filediag;
-    filediag.open(filenamediag);
-    vprint("Starting thermalization");
     ThermalizationResult therm_result;
-    //int windowSize{std::max(4096, size * size / 64)};
-    if(obc){
-        therm_result = thermalize<Open>(&d, 2048, MAX_THERMALIZATION_SWEEPS, 3, filediag);
-    }
-    else{
-        therm_result = thermalize<Periodic>(&d, 2048, MAX_THERMALIZATION_SWEEPS, 3, filediag);
-    }
-    cudaDeviceSynchronize();
-    bool is_thermalized = therm_result.thermalized;
-    filediag.close(); //also used later, rememeber to reopen for writing
-    fmt::println("Thermalization {} with {} sweeps", is_thermalized, therm_result.sweeps);
-    /* interlude  B */
-    checkCuda(cudaMalloc(&d.magnetization, nsweeps * sizeof(int)), "Failed to allocate magnetization on device");
-    checkCuda(cudaMalloc(&d.energy, nsweeps * sizeof(int)), "Failed to allocate energy on device");
-    checkCuda(cudaMemset(d.magnetization, 0, nsweeps * sizeof(int)), "Failed to memset magnetization");
-    checkCuda(cudaMemset(d.energy, 0, nsweeps * sizeof(int)), "Failed to memset energy");
-    int *magnetization = new int[nsweeps];
-    int *energy = new int[nsweeps];
+    bool is_thermalized{false};
+    dispatch_bc(bc, [&]<BoundaryCondition BC>(){
+        /* annealing */
+        vprint("Temperature: T = {:.4f}", temp);
+        initLatticeKernel<<<nblocks, nthreads>>>(d.lattice, Len, d.state);
+        cudaDeviceSynchronize();
+        anneal<BC>(&d, temp);
+        cudaDeviceSynchronize();
 
-    /* simulation/measure */
-    vprint("Measurement phase");
-    if(obc){
-        blockSweepKernelShared<Open>(&d, nsweeps);
-    }
-    else{
-        blockSweepKernelShared<Periodic>(&d, nsweeps);
-    }
+        /* interlude A */
+        float expTable[9];
+        for(int i{0}; i<9; i++){
+            expTable[i] = exp(-(float)_deltaE[i] / temp);
+        }
+        cudaMemcpyToSymbol(d_expTable, expTable, 9 * sizeof(float));
+        cudaDeviceSynchronize();
+
+        /* thermalization */
+        filediag.open(filenamediag);
+        vprint("Starting thermalization");
+        //int windowSize{std::max(4096, size * size / 64)};
+        therm_result = thermalize<BC>(&d, 2048, MAX_THERMALIZATION_SWEEPS, 3, filediag);
+        cudaDeviceSynchronize();
+        is_thermalized = therm_result.thermalized;
+        filediag.close(); //also used later, rememeber to reopen for writing
+        fmt::println("Thermalization {} with {} sweeps", is_thermalized, therm_result.sweeps);
+        /* interlude  B */
+        checkCuda(cudaMalloc(&d.magnetization, nsweeps * sizeof(int)), "Failed to allocate magnetization on device");
+        checkCuda(cudaMalloc(&d.energy, nsweeps * sizeof(int)), "Failed to allocate energy on device");
+        checkCuda(cudaMemset(d.magnetization, 0, nsweeps * sizeof(int)), "Failed to memset magnetization");
+        checkCuda(cudaMemset(d.energy, 0, nsweeps * sizeof(int)), "Failed to memset energy");
+
+        /* simulation/measure */
+        vprint("Measurement phase");
+        blockSweepKernelShared<BC>(&d, nsweeps);
+        cudaDeviceSynchronize();
+    });
     vprint("Measurement completed. Retrieving data...");
     //retrieve d_mag and d_energy
+    int *magnetization = new int[nsweeps];
+    int *energy = new int[nsweeps];
     checkCuda(cudaMemcpy(magnetization, d.magnetization, nsweeps * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy magnetization from device to host");
     checkCuda(cudaMemcpy(energy, d.energy, nsweeps * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy energy from device to host");
     fmt::println("Data retrieval completed. Processing data...");
@@ -212,18 +204,18 @@ int main(int argc, char** argv){
     infile.close();
 
     fileout.open(outfile, std::ios_base::app);
-    if(write_header) fmt::println(fileout, "L,T,run_tag,is_thermalized,M_abs,err_M_abs,tau_M_abs,M2,err_M2,tau_M2,M4,err_M4,tau_M4,E,err_E,tau_E,E2,err_E2,tau_E2,seed");
+    if(write_header) fmt::println(fileout, "L,T,run_tag,is_thermalized,M_abs,err_M_abs,tau_M_abs,M2,err_M2,tau_M2,M4,err_M4,tau_M4,E,err_E,tau_E,E2,err_E2,tau_E2,seed,bc");
     
     fmt::println(
         fileout,
-        "{},{:.4f},{},{},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{}",
+        "{},{:.4f},{},{},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{:.6f},{:.6f},{:.2f},{},{}",
         size, temp, run_tag, (is_thermalized ? 1 : 0),
         res_M_abs.mean, res_M_abs.error, res_M_abs.tau_int,
         res_M2.mean, res_M2.error, res_M2.tau_int,
         res_M4.mean, res_M4.error, res_M4.tau_int,
         res_E.mean, res_E.error, res_E.tau_int,
         res_E2.mean, res_E2.error, res_E2.tau_int,
-        seed
+        seed, bc_str
     );
     fileout.close();
     vprint("Data saved to {}.", outfile);
