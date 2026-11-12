@@ -417,7 +417,7 @@ __global__ void updateTileKernel(
 
     /* interlude */
     int gy = globalYOrig + ty;
-    //corresponding white/black use the same state -> size/2
+    //corresponding white/black use the same curand state -> size/2
     //globalXOrig + 2*tx + (gy&1) computes columns + alternate parity
     int stateIdx = gy * (size/2) + (globalXOrig + 2*tx + (gy&1)) / 2;
     curandStatePhilox4_32_10_t threadState = state[stateIdx]; //64 bytes
@@ -478,6 +478,22 @@ __global__ void updateTileKernel(
     int nb_right_b  = s_tile_raw[sy*stride + sx_b+1];
     int tMag = spin_w + spin_b;
     int tEnergy = - spin_w * (nb_up_w+nb_right_w) - spin_b * (nb_up_b+nb_right_b);
+    if constexpr (BC == FixedUp){
+        if(gy == size - 1){//bottom spins 
+            int nb_down_w = s_tile_raw[(sy+1)*stride + sx_w];
+            int nb_down_b = s_tile_raw[(sy+1)*stride + sx_b];
+            tEnergy -= spin_w * nb_down_w + spin_b * nb_down_b;
+        }
+        if(globalXOrig == 0 && tx == 0){//left spins
+            //sx_w-1 = sx_w-1 = 0 for all the spins in the leftmos column
+            if((gy&1) == 0){
+                tEnergy -= spin_w * s_tile_raw[sy*stride + sx_w-1];
+            }
+            else{
+                tEnergy -= spin_b * s_tile_raw[sy*stride + sx_b-1];
+            }
+        }
+    }
     __syncthreads();
     int* s_reduce = s_tile_raw;
     s_reduce[tid] = tMag;
