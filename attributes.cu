@@ -1,4 +1,5 @@
 #include "ising_shared.hpp"
+#include "ising_cooperative.hpp"
 #include <cuda_runtime.h>
 #include <iostream>
 
