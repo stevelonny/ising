@@ -30,7 +30,8 @@ const int _deltaE[9] = {-8, -6, -4, -2, 0, 2, 4, 6, 8};
 #define __BOUNDARY_CONDITION__
 enum BoundaryCondition{
     Open,
-    Periodic
+    Periodic,
+    FixedUp
 };
 #endif
 
@@ -143,15 +144,21 @@ __global__ void updateTileKernel(int* lattice, int size, int color, int n_TilesR
         int gy = globalYOrig + sy - 1;
         //default read = 0 for boundaries conditions
         int val = 0;
-        if(BC == Open){
-            if(gx >= 0 && gx < size && gy >= 0 && gy < size){
-                val = lattice[gy * size + gx];
-            }
+        if(gx >= 0 && gx < size && gy >= 0 && gy < size){//inside lattice spins
+            val = lattice[gy * size + gx];
         }
-        else if(BC == Periodic){//penalty
-            int wrapped_x = (gx + size) & (size - 1);
-            int wrapped_y = (gy + size) & (size - 1);
-            val = lattice[wrapped_y * size + wrapped_x];
+        else {//border spins
+            if constexpr (BC == Open){
+                val = 0;
+            }
+            else if constexpr (BC == Periodic){//penalty
+                int wrapped_x = (gx + size) & (size - 1);
+                int wrapped_y = (gy + size) & (size - 1);
+                val = lattice[wrapped_y * size + wrapped_x];
+            }
+            else if constexpr (BC == FixedUp){
+                val = 1; //fixed up spins
+            }
         }
         s_tile_raw[sy * stride + sx] = val;
     }
@@ -253,15 +260,21 @@ __global__ void updateTileKernel(int* lattice, int size, int color, int n_TilesR
         int gy = globalYOrig + sy - 1;
         //default read = 0 for boundaries conditions
         int val = 0;
-        if(BC == Open){
-            if(gx >= 0 && gx < size && gy >= 0 && gy < size){
-                val = lattice[gy * size + gx];
-            }
+        if(gx >= 0 && gx < size && gy >= 0 && gy < size){//inside lattice spins
+            val = lattice[gy * size + gx];
         }
-        else if(BC == Periodic){//penalty
-            int wrapped_x = (gx + size) & (size - 1);
-            int wrapped_y = (gy + size) & (size - 1);
-            val = lattice[wrapped_y * size + wrapped_x];
+        else {//border spins
+            if constexpr (BC == Open){
+                val = 0;
+            }
+            else if constexpr (BC == Periodic){//penalty
+                int wrapped_x = (gx + size) & (size - 1);
+                int wrapped_y = (gy + size) & (size - 1);
+                val = lattice[wrapped_y * size + wrapped_x];
+            }
+            else if constexpr (BC == FixedUp){
+                val = 1; //fixed up spins
+            }
         }
         s_tile_raw[sy * stride + sx] = val;
     }
@@ -382,15 +395,21 @@ __global__ void updateTileKernel(
         int gy = globalYOrig + sy - 1;
         //default read = 0 for boundaries conditions
         int val = 0;
-        if(BC == Open){
-            if(gx >= 0 && gx < size && gy >= 0 && gy < size){
-                val = lattice[gy * size + gx];
-            }
+        if(gx >= 0 && gx < size && gy >= 0 && gy < size){//inside lattice spins
+            val = lattice[gy * size + gx];
         }
-        else if(BC == Periodic){//penalty
-            int wrapped_x = (gx + size) & (size - 1);
-            int wrapped_y = (gy + size) & (size - 1);
-            val = lattice[wrapped_y * size + wrapped_x];
+        else {//border spins
+            if constexpr (BC == Open){
+                val = 0;
+            }
+            else if constexpr (BC == Periodic){//penalty
+                int wrapped_x = (gx + size) & (size - 1);
+                int wrapped_y = (gy + size) & (size - 1);
+                val = lattice[wrapped_y * size + wrapped_x];
+            }
+            else if constexpr (BC == FixedUp){
+                val = 1; //fixed up spins
+            }
         }
         s_tile_raw[sy * stride + sx] = val;
     }
@@ -494,6 +513,37 @@ __global__ void updateTileKernel(
 
 }
 
+//says "int blockSweeps" but it is actually the number of sweeps to perform
+//old remains of old blocking implementation
+template<BoundaryCondition BC>
+void blockSweepKernelShared(DataBlockShared* d, int blockSweeps) {
+    KernelConfig config = kernelConfig(d->size);
+
+    for(int s{0}; s<blockSweeps; s++){
+        /* red pass */
+        updateTileKernel<BC><<<config.grid, config.block, config.shared_mem_bytes>>>(
+            d->lattice, 
+            d->size, 
+            0,
+            config.n_TilesRow, 
+            &d->magnetization[s],
+            &d->energy[s],
+            d->state
+        );
+        /* blue pass */        
+        updateTileKernel<BC><<<config.grid, config.block, config.shared_mem_bytes>>>(
+            d->lattice, 
+            d->size, 
+            1,
+            config.n_TilesRow, 
+            &d->magnetization[s],
+            &d->energy[s],
+            d->state
+        );
+    }
+}
+
+/* to be cut */
 //kernel for cooperative groups
 template<BoundaryCondition BC>
 __device__ void updateTile(int* lattice, int size, int color, int tile_id, int n_TilesRow, int* d_mag_sweep,  int* s_tile_raw, curandStatePhilox4_32_10_t *state){
@@ -707,37 +757,7 @@ void launchCooperativeUpdateTileKernel(DataBlockShared* d, int blockSweeps){
     ), "Failed to launch cooperative update tile kernel");
 
 }
-
-//says "int blockSweeps" but it is actually the number of sweeps to perform
-//old remains of old blocking implementation
-template<BoundaryCondition BC>
-void blockSweepKernelShared(DataBlockShared* d, int blockSweeps) {
-    KernelConfig config = kernelConfig(d->size);
-
-    for(int s{0}; s<blockSweeps; s++){
-        /* red pass */
-        updateTileKernel<BC><<<config.grid, config.block, config.shared_mem_bytes>>>(
-            d->lattice, 
-            d->size, 
-            0,
-            config.n_TilesRow, 
-            &d->magnetization[s],
-            &d->energy[s],
-            d->state
-        );
-        /* blue pass */        
-        updateTileKernel<BC><<<config.grid, config.block, config.shared_mem_bytes>>>(
-            d->lattice, 
-            d->size, 
-            1,
-            config.n_TilesRow, 
-            &d->magnetization[s],
-            &d->energy[s],
-            d->state
-        );
-    }
-}
-
+/* end of cut */
 
 #endif // __ISING_SHARED_HPP__
 
