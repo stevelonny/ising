@@ -33,6 +33,19 @@ enum BoundaryCondition{
     Periodic,
     FixedUp
 };
+
+//behold, the horrors of C++ 20 template metaprogramming
+template <typename Func>
+//deduce type without evaluating
+decltype(auto) dispatch_bc(BoundaryCondition bc, Func&& fun){
+    switch(bc){
+        //case :        return [&]fun<BC>(...)
+        case Open:      return fun.template operator()<Open>();
+        case Periodic:  return fun.template operator()<Periodic>();
+        case FixedUp:   return fun.template operator()<FixedUp>();
+    }
+}
+
 #endif
 
 struct DataBlockShared{//all pointers are device pointers
