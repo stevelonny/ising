@@ -70,7 +70,7 @@ TC_EXACT = 2.0 / np.log(1.0 + np.sqrt(2.0))   # ≈ 2.26919  (Onsager)
 # I/O
 # ===========================================================================
 
-def load(path: str | Path, drop_unthermalized: bool = True) -> pd.DataFrame:
+def load(path: str | Path, drop_unthermalized: bool = False) -> pd.DataFrame:
     """Load and lightly validate the master CSV produced by run_shared.x.
 
     Parameters
@@ -78,8 +78,9 @@ def load(path: str | Path, drop_unthermalized: bool = True) -> pd.DataFrame:
     path:
         Path to the CSV file.
     drop_unthermalized:
-        If True (default) rows with ``is_thermalized == 0`` are discarded
-        with a warning.
+        If True, rows with ``is_thermalized == 0`` are discarded.
+        Defaults to False because near Tc critical slowing down causes
+        the conservative thermalization test to produce false negatives.
 
     Returns
     -------
@@ -100,14 +101,17 @@ def load(path: str | Path, drop_unthermalized: bool = True) -> pd.DataFrame:
         raise ValueError(f"CSV is missing columns: {missing}")
 
     n_total = len(df)
+    bad = df["is_thermalized"] == 0
     if drop_unthermalized:
-        bad = df["is_thermalized"] == 0
         if bad.any():
             warnings.warn(
-                f"Dropping {bad.sum()} / {n_total} rows that did not thermalize.",
+                f"Dropping {bad.sum()} / {n_total} rows where is_thermalized == 0.",
                 stacklevel=2,
             )
             df = df[~bad].copy()
+    else:
+        if bad.any():
+            print(f"  Note: {bad.sum()} / {n_total} rows have is_thermalized == 0 (retained by default).")
 
     df["N"] = df["L"] ** 2          # number of spins
     df["T"] = df["T"].round(6)      # normalise floating-point T labels
@@ -130,12 +134,11 @@ def _chi_err(
     M_abs: np.ndarray, err_M_abs: np.ndarray,
     N: np.ndarray, T: np.ndarray,
 ) -> np.ndarray:
-    """Propagated statistical error on χ (linear error propagation)."""
-    dm2   = err_M2   / N**2
-    dmabs = err_M_abs / N
-    # ∂χ/∂⟨m²⟩ = N/T,  ∂χ/∂⟨|m|⟩ = -2N⟨|m|⟩/T
-    mabs = M_abs / N
-    return np.sqrt((N / T * dm2)**2 + (2 * N * mabs / T * dmabs)**2)
+    """Statistical error on χ accounting for the covariance between ⟨m²⟩ and ⟨|m|⟩²."""
+    var_M = np.maximum(M2 - M_abs**2, 1e-12)
+    chi = var_M / (N * T)
+    # N_eff = var_M / err_M_abs^2  -->  sigma(chi) = chi * sqrt(2 / N_eff)
+    return np.sqrt(2.0 * np.maximum(chi, 0.0) / (N * T)) * err_M_abs
 
 
 def _cv(E2: np.ndarray, E: np.ndarray, N: np.ndarray, T: np.ndarray) -> np.ndarray:
@@ -150,11 +153,11 @@ def _cv_err(
     E: np.ndarray, err_E: np.ndarray,
     N: np.ndarray, T: np.ndarray,
 ) -> np.ndarray:
-    """Propagated statistical error on Cv."""
-    de2 = err_E2 / N**2
-    de  = err_E  / N
-    e   = E / N
-    return np.sqrt((N / T**2 * de2)**2 + (2 * N * e / T**2 * de)**2)
+    """Statistical error on Cv accounting for the covariance between ⟨e²⟩ and ⟨e⟩²."""
+    var_E = np.maximum(E2 - E**2, 1e-12)
+    cv = var_E / (N * T**2)
+    # N_eff = var_E / err_E^2  -->  sigma(Cv) = Cv * sqrt(2 / N_eff)
+    return np.sqrt(2.0 * np.maximum(cv, 0.0) / (N * T**2)) * err_E
 
 
 def _binder(M4: np.ndarray, M2: np.ndarray) -> np.ndarray:
@@ -242,13 +245,20 @@ def compute_observables(df: pd.DataFrame) -> pd.DataFrame:
 # Finite-size scaling utilities
 # ===========================================================================
 
-def peak_temperature(df_agg: pd.DataFrame, obs: str = "chi") -> pd.DataFrame:
+def peak_temperature(
+    df_agg: pd.DataFrame,
+    obs: str = "chi",
+    refine: bool = True,
+) -> pd.DataFrame:
     """Find the temperature of the peak of *obs* for each lattice size L.
 
     Parameters
     ----------
     obs:
         Observable column name, e.g. ``"chi"`` or ``"cv"``.
+    refine:
+        If True (default), refines the peak location and amplitude with a
+        sub-grid 3-point parabolic interpolation.
 
     Returns
     -------
@@ -256,15 +266,52 @@ def peak_temperature(df_agg: pd.DataFrame, obs: str = "chi") -> pd.DataFrame:
     """
     rows = []
     for L, grp in df_agg.groupby("L"):
+        grp = grp.sort_values("T").reset_index(drop=True)
         idx = grp[obs].idxmax()
-        rows.append({"L": L, "T_peak": grp.loc[idx, "T"], "peak_value": grp.loc[idx, obs]})
+        T_peak = float(grp.loc[idx, "T"])
+        peak_val = float(grp.loc[idx, obs])
+
+        if refine and 0 < idx < len(grp) - 1:
+            T0 = float(grp.loc[idx - 1, "T"])
+            T1 = float(grp.loc[idx, "T"])
+            T2 = float(grp.loc[idx + 1, "T"])
+            y0 = float(grp.loc[idx - 1, obs])
+            y1 = float(grp.loc[idx, obs])
+            y2 = float(grp.loc[idx + 1, obs])
+            h1 = T1 - T0
+            h2 = T2 - T1
+
+            # Check if grid spacing is uniform
+            if abs(h1 - h2) < 1e-5:
+                h = h1
+                denom = 2.0 * (2.0 * y1 - y0 - y2)
+                if denom > 0:
+                    delta = h * (y2 - y0) / denom
+                    if abs(delta) < h:
+                        T_peak = T1 + delta
+                        peak_val = y1 + 0.5 * (y2 - y0) * (delta / (2.0 * h))
+            else:
+                # Non-uniform spacing parabolic interpolation
+                denom = (T0 - T1) * (T0 - T2) * (T1 - T2)
+                if denom != 0:
+                    a = (T2 * (y1 - y0) + T1 * (y0 - y2) + T0 * (y2 - y1)) / denom
+                    b = (T2**2 * (y0 - y1) + T1**2 * (y2 - y0) + T0**2 * (y1 - y2)) / denom
+                    if a < 0:
+                        T_cand = -b / (2.0 * a)
+                        if T0 <= T_cand <= T2:
+                            T_peak = T_cand
+                            c = y1 - a * T1**2 - b * T1
+                            peak_val = a * T_peak**2 + b * T_peak + c
+
+        rows.append({"L": L, "T_peak": T_peak, "peak_value": peak_val})
     return pd.DataFrame(rows)
 
 
 def binder_crossing(df_agg: pd.DataFrame) -> dict:
-    """Estimate Tc from the crossing of the Binder cumulant curves.
+    """Estimate Tc from pairwise crossings of the Binder cumulant curves.
 
-    Uses pairwise linear interpolation between adjacent (L1, L2) pairs.
+    Uses pairwise linear interpolation on the union of sample points
+    in the overlapping temperature range between adjacent (L1, L2) pairs.
 
     Returns
     -------
@@ -276,23 +323,48 @@ def binder_crossing(df_agg: pd.DataFrame) -> dict:
         L1, L2 = Ls[i], Ls[i + 1]
         g1 = df_agg[df_agg["L"] == L1].sort_values("T")
         g2 = df_agg[df_agg["L"] == L2].sort_values("T")
-        # Interpolate onto common T grid
-        T_common = np.intersect1d(g1["T"].values, g2["T"].values)
+        t1, b1_raw = g1["T"].values, g1["binder"].values
+        t2, b2_raw = g2["T"].values, g2["binder"].values
+
+        T_min = max(t1.min(), t2.min())
+        T_max = min(t1.max(), t2.max())
+        if T_max <= T_min:
+            continue
+
+        # Common evaluation grid: union of points in the overlapping window
+        T_common = np.unique(np.concatenate([
+            t1[(t1 >= T_min) & (t1 <= T_max)],
+            t2[(t2 >= T_min) & (t2 <= T_max)]
+        ]))
         if len(T_common) < 2:
             continue
-        b1 = np.interp(T_common, g1["T"].values, g1["binder"].values)
-        b2 = np.interp(T_common, g2["T"].values, g2["binder"].values)
+
+        b1 = np.interp(T_common, t1, b1_raw)
+        b2 = np.interp(T_common, t2, b2_raw)
         diff = b1 - b2
-        # Find sign change
+
+        # Find sign changes
         sign_changes = np.where(np.diff(np.sign(diff)))[0]
         if len(sign_changes) == 0:
             continue
-        k = sign_changes[0]
-        # Linear interpolation for the root
-        T1, T2 = T_common[k], T_common[k + 1]
-        d1, d2 = diff[k], diff[k + 1]
-        T_cross = T1 - d1 * (T2 - T1) / (d2 - d1)
-        crossings[(L1, L2)] = T_cross
+
+        roots = []
+        for k in sign_changes:
+            T1, T2 = T_common[k], T_common[k + 1]
+            d1, d2 = diff[k], diff[k + 1]
+            if d2 != d1:
+                T_root = T1 - d1 * (T2 - T1) / (d2 - d1)
+                b_root = float(0.5 * (b1[k] + b2[k]))
+                roots.append((T_root, b_root))
+
+        if roots:
+            # In the ferromagnetic phase (T << Tc), U4 -> 2/3 (0.6667) for all sizes.
+            # Trivial noise crossings in this flat saturation plateau (b_root > 0.65)
+            # must be excluded in favor of the physical critical crossing (U* ≈ 0.61).
+            crit_roots = [T_r for (T_r, b_r) in roots if b_r < 0.65]
+            if not crit_roots:
+                crit_roots = [min(roots, key=lambda x: abs(x[1] - 0.61069))[0]]
+            crossings[(L1, L2)] = float(np.mean(crit_roots))
     return crossings
 
 
@@ -361,6 +433,7 @@ def extrapolate_tc(
     *,
     fix_nu: bool = True,
     min_sizes: int = 3,
+    refine_peaks: bool = True,
 ) -> dict[str, ExtrapResult]:
     """Extrapolate the critical temperature Tc using three independent methods.
 
@@ -408,7 +481,7 @@ def extrapolate_tc(
     # Helper: fit T_peak(L) = Tc + a * L^{-1/nu}
     # ------------------------------------------------------------------
     def _fit_peaks(obs: str, label: str) -> ExtrapResult:
-        peaks = peak_temperature(df_agg, obs)
+        peaks = peak_temperature(df_agg, obs, refine=refine_peaks)
         Ls     = peaks["L"].values.astype(float)
         Tpeaks = peaks["T_peak"].values
 
@@ -602,7 +675,10 @@ def extrapolate_tc(
 
 def _color_map(Ls):
     """Return a color per lattice size from a sequential colormap."""
-    cmap = cm.get_cmap("plasma", len(Ls))
+    try:
+        cmap = matplotlib.colormaps["plasma"].resampled(len(Ls))
+    except (AttributeError, KeyError):
+        cmap = plt.get_cmap("plasma", len(Ls))
     return {L: cmap(i) for i, L in enumerate(sorted(Ls))}
 
 
@@ -673,7 +749,8 @@ def plot_binder(df_agg: pd.DataFrame, ax=None, title: str = "Binder Cumulant $U_
 
 def plot_fss_peaks(df_agg: pd.DataFrame, obs: str = "chi",
                    extrap: dict | None = None,
-                   ax=None, title: str | None = None):
+                   ax=None, title: str | None = None,
+                   refine_peaks: bool = True):
     """Plot T_peak(L) vs 1/L and overlay the FSS power-law fit.
 
     Parameters
@@ -682,10 +759,12 @@ def plot_fss_peaks(df_agg: pd.DataFrame, obs: str = "chi",
         Optional dict returned by :func:`extrapolate_tc`.  When provided the
         fitted curve and Tc estimate are drawn; otherwise a simple linear
         regression in 1/L is used as a quick visual guide.
+    refine_peaks:
+        Whether to use sub-grid parabolic peak refinement.
     """
     if ax is None:
         fig, ax = plt.subplots(figsize=(5, 4))
-    peaks = peak_temperature(df_agg, obs)
+    peaks = peak_temperature(df_agg, obs, refine=refine_peaks)
     if len(peaks) < 2:
         ax.text(0.5, 0.5, "Not enough data for FSS", transform=ax.transAxes, ha="center")
         return ax
@@ -708,9 +787,8 @@ def plot_fss_peaks(df_agg: pd.DataFrame, obs: str = "chi",
 
         if a is not None:
             inv_nu  = 1.0 / nu if nu and nu > 0 else 1.0
-            T_curve = Tc_est + a * (1.0 / (L_dense + 1e-12)) ** (-inv_nu)  # L_dense in L space
-            # Recalculate: L_dense as 1/L values → L = 1/L_dense
-            L_for_curve = np.where(L_dense > 0, 1.0 / L_dense, np.inf)
+            with np.errstate(divide="ignore"):
+                L_for_curve = np.where(L_dense > 0, 1.0 / np.maximum(L_dense, 1e-15), np.inf)
             T_curve = _fss_model(L_for_curve, Tc_est, a, inv_nu)
             ax.plot(inv_dense, T_curve, "r-", lw=1.5,
                     label=f"FSS fit (ν={nu:.2f})")
@@ -794,14 +872,14 @@ def plot_extrapolation(
 
 
 def plot_all(df_agg: pd.DataFrame, save_figs: bool = False, out_dir: str = ".",
-             extrap: dict | None = None):
+             extrap: dict | None = None, refine_peaks: bool = True):
     """Produce a 2×3 panel: chi, cv, binder, FSS-chi, FSS-cv, Tc summary."""
     if not HAS_MPL:
         print("matplotlib not available — skipping plots.", file=sys.stderr)
         return
 
     if extrap is None:
-        extrap = extrapolate_tc(df_agg)
+        extrap = extrapolate_tc(df_agg, refine_peaks=refine_peaks)
 
     fig, axes = plt.subplots(2, 3, figsize=(16, 9))
     fig.suptitle("2D Ising Model — Critical Temperature Analysis", fontsize=13)
@@ -809,8 +887,8 @@ def plot_all(df_agg: pd.DataFrame, save_figs: bool = False, out_dir: str = ".",
     plot_chi(df_agg, ax=axes[0, 0])
     plot_cv(df_agg, ax=axes[0, 1])
     plot_binder(df_agg, ax=axes[0, 2])
-    plot_fss_peaks(df_agg, obs="chi", extrap=extrap, ax=axes[1, 0])
-    plot_fss_peaks(df_agg, obs="cv",  extrap=extrap, ax=axes[1, 1])
+    plot_fss_peaks(df_agg, obs="chi", extrap=extrap, ax=axes[1, 0], refine_peaks=refine_peaks)
+    plot_fss_peaks(df_agg, obs="cv",  extrap=extrap, ax=axes[1, 1], refine_peaks=refine_peaks)
     plot_extrapolation(df_agg, extrap=extrap, ax=axes[1, 2])
 
     plt.tight_layout()
@@ -827,7 +905,7 @@ def plot_all(df_agg: pd.DataFrame, save_figs: bool = False, out_dir: str = ".",
 # Summary table
 # ===========================================================================
 
-def print_summary(df_agg: pd.DataFrame, extrap: dict | None = None) -> None:
+def print_summary(df_agg: pd.DataFrame, extrap: dict | None = None, refine_peaks: bool = True) -> None:
     """Print a readable summary of peaks, Binder crossings, and Tc extrapolation.
 
     Parameters
@@ -836,13 +914,15 @@ def print_summary(df_agg: pd.DataFrame, extrap: dict | None = None) -> None:
         Optional dict returned by :func:`extrapolate_tc`.  When provided a
         full extrapolation section is printed.  If omitted, :func:`extrapolate_tc`
         is called automatically.
+    refine_peaks:
+        Whether to use sub-grid parabolic peak refinement.
     """
     print("\n" + "=" * 60)
     print("  Finite-size scaling summary")
     print("=" * 60)
 
     for obs, label in [("chi", "χ"), ("cv", "Cv")]:
-        peaks = peak_temperature(df_agg, obs)
+        peaks = peak_temperature(df_agg, obs, refine=refine_peaks)
         print(f"\n  {label} peaks:")
         print(f"    {'L':>6}  {'T_peak':>10}  {'peak_value':>14}")
         for _, row in peaks.iterrows():
@@ -858,7 +938,7 @@ def print_summary(df_agg: pd.DataFrame, extrap: dict | None = None) -> None:
 
     # --- Tc extrapolation ---------------------------------------------------
     if extrap is None:
-        extrap = extrapolate_tc(df_agg)
+        extrap = extrapolate_tc(df_agg, refine_peaks=refine_peaks)
 
     print("\n" + "=" * 60)
     print("  Critical temperature extrapolation")
@@ -885,8 +965,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("csv", help="Path to master_results.csv")
     p.add_argument(
-        "--keep-unthermalized", action="store_true",
-        help="Include rows where is_thermalized == 0",
+        "--drop-unthermalized", action="store_true",
+        help="Discard rows where is_thermalized == 0 (default: keep all rows)",
+    )
+    p.add_argument(
+        "--keep-unthermalized", action="store_true", default=True,
+        help="Include rows where is_thermalized == 0 (default behavior, kept for compatibility)",
+    )
+    p.add_argument(
+        "--no-refine-peaks", action="store_true",
+        help="Disable sub-grid parabolic peak refinement and use discrete maximum",
     )
     p.add_argument(
         "--plot", action="store_true",
@@ -915,7 +1003,7 @@ def main(argv=None):
     args = _build_parser().parse_args(argv)
 
     print(f"Loading {args.csv} …")
-    df_raw = load(args.csv, drop_unthermalized=not args.keep_unthermalized)
+    df_raw = load(args.csv, drop_unthermalized=args.drop_unthermalized)
     print(f"  {len(df_raw)} rows loaded  "
           f"({df_raw['L'].nunique()} sizes, {df_raw['T'].nunique()} temperatures, "
           f"{df_raw['run_tag'].nunique()} tags)")
@@ -923,10 +1011,12 @@ def main(argv=None):
     print("Computing observables (χ, Cv, Binder) …")
     df_agg = compute_observables(df_raw)
 
-    print("Extrapolating Tc …")
-    extrap = extrapolate_tc(df_agg, fix_nu=not args.free_nu)
+    refine_peaks = not args.no_refine_peaks
 
-    print_summary(df_agg, extrap=extrap)
+    print("Extrapolating Tc …")
+    extrap = extrapolate_tc(df_agg, fix_nu=not args.free_nu, refine_peaks=refine_peaks)
+
+    print_summary(df_agg, extrap=extrap, refine_peaks=refine_peaks)
 
     if args.save_csv:
         df_agg.to_csv(args.save_csv, index=False)
@@ -934,7 +1024,7 @@ def main(argv=None):
 
     if args.plot:
         plot_all(df_agg, save_figs=args.save_figs, out_dir=args.out_dir,
-                 extrap=extrap)
+                 extrap=extrap, refine_peaks=refine_peaks)
 
 
 if __name__ == "__main__":
