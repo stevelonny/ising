@@ -26,7 +26,7 @@ static void print_usage(const char* prog) {
         "  -L, --log2-size  Power of 2 for grid size (integer >= 6)\n"
         "  -T, --temp       Temperature (float > 0)\n"
         "  -N, --nsweeps    Number of measurement sweeps (int > 0)\n"
-        "  -b, --bc         Boundary conditions: obc or pbc or fixup\n"
+        "  -b, --bc         Boundary conditions: obc or pbc or fixup or fixalt\n"
         "  -t, --tag        Run tag for output CSV  [default: tagless]\n"
         "  -o, --output     Output CSV filename     [default: master_results.csv]\n"
         "  -s, --seed       PRNG seed               [default: random]\n"
@@ -65,11 +65,12 @@ int main(int argc, char** argv){
             case 'T': temp    = stod(optarg); break;
             case 'N': nsweeps = stoi(optarg); break;
             case 'b':
-                if      (string(optarg) == "obc")       { bc_set = true; bc = Open; bc_str = "obc"; }
-                else if (string(optarg) == "pbc")       { bc_set = true; bc = Periodic; bc_str = "pbc"; }
-                else if (string(optarg) == "fixup")     { bc_set = true; bc = FixedUp; bc_str = "fixup"; }
+                if      (string(optarg) == "obc")       { bc_set = true; bc = Open;                 bc_str = "obc"; }
+                else if (string(optarg) == "pbc")       { bc_set = true; bc = Periodic;             bc_str = "pbc"; }
+                else if (string(optarg) == "fixup")     { bc_set = true; bc = FixedUp;              bc_str = "fixup"; }
+                else if (string(optarg) == "fixalt")    { bc_set = true; bc = FixedAlternating;     bc_str = "fixalt"; }
                 else {
-                    fmt::print(stderr, "Error: --bc must be 'obc' or 'pbc' or 'fixup'.\n");
+                    fmt::print(stderr, "Error: --bc must be 'obc' or 'pbc' or 'fixup' or 'fixalt'.\n");
                     return -1;
                 }
                 break;

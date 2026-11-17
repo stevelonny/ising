@@ -82,7 +82,6 @@ ThermalizationResult thermalize(
 ){
     int consecutiveWindows{0};
     bool havePreviousWindow{false};
-    BlockResult prevAbsMagResult;
     BlockResult prevM2Result;
     BlockResult prevEnergyResult;
     int maxWindows {maxSweeps/windowSize};
@@ -94,13 +93,13 @@ ThermalizationResult thermalize(
     cudaDeviceSynchronize();
     int* magnetization = new int[windowSize];
     int* energy = new int[windowSize];
-    std::vector<double> absMag_data(windowSize);
+    std::vector<double> Mag_data(windowSize);
     std::vector<double> m2_data(windowSize);
     std::vector<double> energy_data(windowSize);
 
     fmt::println(verboseStream,
         "{:<5}{:<15}{:<15}{:<15}{:<15}{:<15}{:<15}",
-        "Win", "absMag", "err", "m2", "err", "energy", "err"
+        "Win", "Mag", "err", "m2", "err", "energy", "err"
     );
     while(consecutiveWindows < requiredConsecutiveWindows && nWindows < maxWindows){
         cudaMemset(d->magnetization, 0, windowSize * sizeof(int));
@@ -118,29 +117,27 @@ ThermalizationResult thermalize(
             "Failed to copy energy from device to host"
         );
         for(int i{0}; i<windowSize; i++){
-            absMag_data[i] = std::abs(static_cast<double>(magnetization[i]));
+            Mag_data[i] = static_cast<double>(magnetization[i]);
             m2_data[i] = static_cast<double>(magnetization[i]) * static_cast<double>(magnetization[i]);
             energy_data[i] = static_cast<double>(energy[i]);
         }
-        BlockResult absMag = calculateBlockedError(absMag_data, maxLevels);
+        BlockResult Mag = calculateBlockedError(Mag_data, maxLevels);
         BlockResult m2 = calculateBlockedError(m2_data, maxLevels);
         BlockResult energyRes = calculateBlockedError(energy_data, maxLevels);
         fmt::println(verboseStream,
             "{:<5}{:<15.5f}{:<15.5f}{:<15.5f}{:<15.5f}{:<15.5f}{:<15.5f}",
-            nWindows, absMag.mean, absMag.error, m2.mean, m2.error, energyRes.mean, energyRes.error
+            nWindows, Mag.mean, Mag.error, m2.mean, m2.error, energyRes.mean, energyRes.error
         );
         if(havePreviousWindow){
-            bool absMagConverged = converged(prevAbsMagResult, absMag);
             bool m2Converged = converged(prevM2Result, m2);
             bool energyConverged = converged(prevEnergyResult, energyRes);
-            if(absMagConverged && m2Converged && energyConverged){
+            if(m2Converged && energyConverged){
                 consecutiveWindows++;
             }
             else{
                 consecutiveWindows = 0;
             }
         }
-        prevAbsMagResult = absMag;
         prevM2Result = m2;
         prevEnergyResult = energyRes;
         havePreviousWindow = true;

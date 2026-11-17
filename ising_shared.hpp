@@ -28,7 +28,8 @@ const int _deltaE[9] = {-8, -6, -4, -2, 0, 2, 4, 6, 8};
 enum BoundaryCondition{
     Open,
     Periodic,
-    FixedUp
+    FixedUp,
+    FixedAlternating
 };
 
 //behold, the horrors of C++ 20 template metaprogramming
@@ -36,11 +37,13 @@ template <typename Func>
 //deduce type without evaluating
 decltype(auto) dispatch_bc(BoundaryCondition bc, Func&& fun){
     switch(bc){
-        //case :        return [&]fun<BC>(...)
-        case Open:      return fun.template operator()<Open>();
-        case Periodic:  return fun.template operator()<Periodic>();
-        case FixedUp:   return fun.template operator()<FixedUp>();
+        //case :                    return [&]fun<BC>(...)
+        case Open:                  return fun.template operator()<Open>();
+        case Periodic:              return fun.template operator()<Periodic>();
+        case FixedUp:               return fun.template operator()<FixedUp>();
+        case FixedAlternating:      return fun.template operator()<FixedAlternating>();
     }
+    throw std::invalid_argument("Unkown Boundary Condition");
 }
 
 #endif
@@ -121,7 +124,7 @@ __device__ inline int readSpin(const int* lattice, int size, int gx, int gy){
     if(gx >= 0 && gx < size && gy >= 0 && gy < size){//inside lattice spins
         return lattice[gy * size + gx];
     }
-    else {//border spins
+    else{//border spins
         if constexpr (BC == Open){
             return 0;
         }
@@ -132,6 +135,9 @@ __device__ inline int readSpin(const int* lattice, int size, int gx, int gy){
         }
         else if constexpr (BC == FixedUp){
             return 1; //fixed up spins
+        }
+        else if constexpr (BC == FixedAlternating){
+            return ((gx+gy) & 1) ? -1 : 1;
         }
         return 0;
     }
@@ -450,7 +456,7 @@ __global__ void updateTileKernel(
     int nb_right_b  = s_tile_raw[sy*stride + sx_b+1];
     int tMag = spin_w + spin_b;
     int tEnergy = - spin_w * (nb_up_w+nb_right_w) - spin_b * (nb_up_b+nb_right_b);
-    if constexpr (BC == FixedUp){
+    if constexpr (BC == FixedUp || BC == FixedAlternating){
         if(gy == size - 1){//bottom spins 
             int nb_down_w = s_tile_raw[(sy+1)*stride + sx_w];
             int nb_down_b = s_tile_raw[(sy+1)*stride + sx_b];
