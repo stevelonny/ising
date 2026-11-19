@@ -21,7 +21,8 @@ void vprint(fmt::format_string<Args...> fmt_str, Args&&... args) {
 
 static void print_usage(const char* prog) {
     fmt::print(stderr,
-        "Usage: {} -L <log2_size> -T <temp> -N <nsweeps> -b <obc|pbc|fixup> "
+        "Shared memeory based kernel implementation\n"
+        "Usage: {} -L <log2_size> -T <temp> -N <nsweeps> -b <obc|pbc|fixup|fixalt> "
         "[-t <tag>] [-o <output.csv>] [-s <seed>] [-v]\n\n"
         "  -L, --log2-size  Power of 2 for grid size (integer >= 6)\n"
         "  -T, --temp       Temperature (float > 0)\n"
