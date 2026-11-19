@@ -10,7 +10,7 @@ namespace cg = cooperative_groups;
 
 //kernel for cooperative groups
 template<BoundaryCondition BC>
-__device__ void updateTile(int* lattice, int size, int color, int tile_id, int n_TilesRow, int* d_mag_sweep,  int* s_tile_raw, curandStatePhilox4_32_10_t *state){
+__device__ void updateTile(int* lattice, int size, int color, int tile_id, int n_TilesRow, int* d_mag_sweep, int* d_energy_sweep, int* s_tile_raw, curandStatePhilox4_32_10_t *state){
     /* indexing */
     //tiling
     //int tile_id = blockIdx.x;
@@ -34,28 +34,7 @@ __device__ void updateTile(int* lattice, int size, int color, int tile_id, int n
     //will need indexing for the tile sx, sy for accessing the halo
 
     /* read from global memory */
-    int total_elements = (tileWidth+2) * (tileHeight+2);
-    for(int i{tid}; i<total_elements; i+=total_threads){
-        //indexing in the shared memory tile
-        int sy = i / stride;
-        int sx = i % stride;
-        int gx = globalXOrig + sx - 1;
-        int gy = globalYOrig + sy - 1;
-        //default read = 0 for boundaries conditions
-        int val = 0;
-        if(BC == Open){
-            if(gx >= 0 && gx < size && gy >= 0 && gy < size){
-                val = lattice[gy * size + gx];
-            }
-        }
-        else if(BC == Periodic){//penalty
-            int wrapped_x = (gx + size) & (size - 1);
-            int wrapped_y = (gy + size) & (size - 1);
-            val = lattice[wrapped_y * size + wrapped_x];
-        }
-        s_tile_raw[sy * stride + sx] = val;
-    }
-    __syncthreads();
+    loadSharedTile<BC>(lattice, size, globalXOrig, globalYOrig, tileWidth, tileHeight, s_tile_raw, stride, tid, total_threads);
 
     /* interlude */
     int gy = globalYOrig + ty;
@@ -114,11 +93,35 @@ __device__ void updateTile(int* lattice, int size, int color, int tile_id, int n
     }
     __syncthreads();
     /* reduction */
+    //save into registers nbs for energy reduction
+    int nb_up_w     = s_tile_raw[(sy-1)*stride + sx_w];
+    int nb_right_w  = s_tile_raw[sy*stride + sx_w+1];
+    int nb_up_b     = s_tile_raw[(sy-1)*stride + sx_b];
+    int nb_right_b  = s_tile_raw[sy*stride + sx_b+1];
     int tMag = spin_w + spin_b;
+    int tEnergy = - spin_w * (nb_up_w+nb_right_w) - spin_b * (nb_up_b+nb_right_b);
+    if constexpr (BC == FixedUp || BC == FixedAlternating){
+        if(gy == size - 1){//bottom spins 
+            int nb_down_w = s_tile_raw[(sy+1)*stride + sx_w];
+            int nb_down_b = s_tile_raw[(sy+1)*stride + sx_b];
+            tEnergy -= spin_w * nb_down_w + spin_b * nb_down_b;
+        }
+        if(globalXOrig == 0 && tx == 0){//left spins
+            //sx_w-1 = sx_w-1 = 0 for all the spins in the leftmos column
+            if((gy&1) == 0){
+                tEnergy -= spin_w * s_tile_raw[sy*stride + sx_w-1];
+            }
+            else{
+                tEnergy -= spin_b * s_tile_raw[sy*stride + sx_b-1];
+            }
+        }
+    }
+    __syncthreads();
     int* s_reduce = s_tile_raw;
     s_reduce[tid] = tMag;
     __syncthreads();
-
+    
+    //magnetization
     //parallel reduction in shared memory
     for(int s{total_threads/2}; s>0; s/=2){
         if(tid < s){
@@ -129,6 +132,22 @@ __device__ void updateTile(int* lattice, int size, int color, int tile_id, int n
     if(tid == 0){
         atomicAdd(d_mag_sweep, s_tile_raw[0]);
     }
+    __syncthreads();
+    //energy
+    s_reduce[tid] = tEnergy;
+    __syncthreads();
+
+    //parallel reduction in shared memory
+    for(int s{total_threads/2}; s>0; s/=2){
+        if(tid < s){
+            s_tile_raw[tid] += s_tile_raw[tid + s];
+        }
+        __syncthreads();
+    }
+    if(tid == 0){
+        atomicAdd(d_energy_sweep, s_tile_raw[0]);
+    }
+    __syncthreads();
 
 }
 
@@ -146,12 +165,30 @@ __global__ void cooperativeUpdateTileKernel(DataBlockShared d, int blocksweeps, 
         //each tile update will need to be strided
         /* red pass */
         for(size_t tile_id{blockIdx.x}; tile_id < totalTilesPerColor; tile_id += gridDim.x){
-            updateTile<BC>(d.lattice, d.size, 0, tile_id, n_TilesRow, &d.magnetization[s], s_tile_raw, d.state);
+            updateTile<BC>(
+                d.lattice,
+                d.size,
+                0,
+                tile_id,
+                n_TilesRow,
+                &d.magnetization[s],
+                &d.energy[s],
+                s_tile_raw,
+                d.state);
         }
         grid.sync();
         /* blue pass */
         for(size_t tile_id{blockIdx.x}; tile_id < totalTilesPerColor; tile_id += gridDim.x){
-            updateTile<BC>(d.lattice, d.size, 1, tile_id, n_TilesRow, &d.magnetization[s], s_tile_raw, d.state);
+            updateTile<BC>(
+                d.lattice,
+                d.size,
+                1,
+                tile_id,
+                n_TilesRow,
+                &d.magnetization[s],
+                &d.energy[s],
+                s_tile_raw,
+                d.state);
         }
         grid.sync();
     }
