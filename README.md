@@ -48,7 +48,9 @@ make run_hotstart.x     # builds run_hotstart.x
 	- Tiles (blocks) load a tile plus halo into shared memory (`s_tile_raw`), so neighbor reads are mostly from fast shared memory.
 	- Each block updates both white and black sites inside the tile and writes back to global memory.
 	- Per-tile reduction in shared memory yields partial magnetization contributions which are atomically accumulated to a per-sweep counter.
-	- Implements both a normal tiled kernel (`updateTileKernel`) and a cooperative-grid version (`cooperativeUpdateTileKernel`) which uses `cooperative_groups` and `cudaLaunchCooperativeKernel`.
+	- Implements both a normal tiled kernel (`updateTileKernel`).
+- [ising_cooperative.hpp](ising_cooperative.hpp): cooperative-grid tiled implementation (`cooperativeUpdateTileKernel`) which uses `cooperative_groups` and `cudaLaunchCooperativeKernel`.
+
 
 ### Implementation examples
 - [run.cu](run.cu): host program for the global implementation (uses `ising_gpu.hpp`). Typical flow:
