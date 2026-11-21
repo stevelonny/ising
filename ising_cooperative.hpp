@@ -224,8 +224,8 @@ void launchCooperativeUpdateTileKernel(DataBlockShared* d, int blockSweeps){
 
     int maxBlocks = numBlocksPerStreamingProcessor * numStreamingProcessors;
     //if the lattice is smaller, use less blocks
-    //int activeBlocks = std::min(maxBlocks, totalTilesPerColor);
-    int activeBlocks = maxBlocks;
+    int activeBlocks = std::min(maxBlocks, totalTilesPerColor);
+/*     int activeBlocks = maxBlocks;
     while(activeBlocks > 0){
         if(totalTilesPerColor % activeBlocks == 0){
             break;
@@ -236,7 +236,7 @@ void launchCooperativeUpdateTileKernel(DataBlockShared* d, int blockSweeps){
     if(activeBlocks < (numStreamingProcessors*2)){
         activeBlocks = std::min(maxBlocks, totalTilesPerColor);
     }
-
+ */
     dim3 grid(activeBlocks);
 
     DataBlockShared d_val = *d;
