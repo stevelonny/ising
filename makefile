@@ -4,10 +4,12 @@ LIB_FLAGS = -L./fmt/build -lfmt -lcudadevrt
 
 #run: run.cu ising_gpu.hpp fmt/src/format.cc
 #	nvcc $(INCLUDE_FLAGS) $(LIB_FLAGS) -o run.x run.cu -diag-suppress=2417,128
-run_hotstart.x: run_hotstart.cu ising_gpu.hpp ising_shared.hpp ising_cooperative.hpp fmt/build/libfmt.a
-	nvcc -O3 $(INCLUDE_FLAGS) -o run_hotstart.x run_hotstart.cu $(LIB_FLAGS) -diag-suppress=2417,128
 run_shared.x: run_shared.cu ising_gpu.hpp ising_shared.hpp observables.hpp thermalization.hpp fmt/build/libfmt.a
 	nvcc -O3 $(INCLUDE_FLAGS) -o run_shared.x run_shared.cu $(LIB_FLAGS) -lcudadevrt -diag-suppress=2417,128
+run_cooperative.x: run_cooperative.cu ising_gpu.hpp ising_shared.hpp ising_cooperative.hpp observables.hpp thermalization.hpp fmt/build/libfmt.a
+	nvcc -O3 $(INCLUDE_FLAGS) -o run_cooperative.x run_cooperative.cu $(LIB_FLAGS) -lcudadevrt -diag-suppress=2417,128
+run_hotstart.x: run_hotstart.cu ising_gpu.hpp ising_shared.hpp ising_cooperative.hpp fmt/build/libfmt.a
+	nvcc -O3 $(INCLUDE_FLAGS) -o run_hotstart.x run_hotstart.cu $(LIB_FLAGS) -diag-suppress=2417,128
 run.x: run.cu ising_gpu.hpp ising_cpu.hpp fmt/build/libfmt.a
 	nvcc $(INCLUDE_FLAGS) -o run.x run.cu $(LIB_FLAGS) -diag-suppress=2417,128
 

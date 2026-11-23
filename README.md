@@ -7,7 +7,7 @@ Key ideas implemented here:
 - GPU implementations with increasing memory locality and synchronization sophistication:
 	- simple per-sublattice global-memory kernels (`ising_gpu.hpp` + `run.cu`),
 	- shared-memory tiled kernels (`ising_shared.hpp` + `run_shared.cu`),
-	- cooperative-grid launch tiled kernels (cooperative groups, `ising_shared.hpp`).
+	- cooperative-grid launch tiled kernels (`ising_cooperative.hpp` + `run_cooperative.cu`).
 
 ## Quick setup
 Depends on: CUDA toolkit (nvcc), a compatible NVIDIA GPU, and `fmt` (the repository contains a local `fmt/` directory used by the makefile).
@@ -45,11 +45,12 @@ make run_hotstart.x     # builds run_hotstart.x
 	- `blockSweepKernel` — performs alternating white/black updates from host by launching `updateSublatticeKernel` twice per sweep.
 
 - [ising_shared.hpp](ising_shared.hpp): shared-memory tiled implementation. Main ideas:
-	- Tiles (blocks) load a tile plus halo into shared memory (`s_tile_raw`), so neighbor reads are mostly from fast shared memory.
+	- Tiles (blocks) load a tile plus halo into shared memory, so neighbor reads are mostly from fast shared memory.
 	- Each block updates both white and black sites inside the tile and writes back to global memory.
-	- Per-tile reduction in shared memory yields partial magnetization contributions which are atomically accumulated to a per-sweep counter.
-	- Implements both a normal tiled kernel (`updateTileKernel`).
-- [ising_cooperative.hpp](ising_cooperative.hpp): cooperative-grid tiled implementation (`cooperativeUpdateTileKernel`) which uses `cooperative_groups` and `cudaLaunchCooperativeKernel`.
+	- Per-tile reduction in shared memory yields partial magnetization and energy contributions which are atomically accumulated to a per-sweep counter.
+- [`thermalization.hpp`](thermalization.hpp): utilities for thermalization and equilibration.
+- [`observables.hpp`](observables.hpp): utilities for computing magnetization and energy using datablocking tehcniques.
+- [ising_cooperative.hpp](ising_cooperative.hpp): specular cooperative-grid tiled implementation of the tiled approach which uses `cooperative_groups` and `cudaLaunchCooperativeKernel`.
 
 
 ### Implementation examples
@@ -60,13 +61,14 @@ make run_hotstart.x     # builds run_hotstart.x
 	- For measurement it uses `blockSweepKernel` to perform block sweeps and writes summary statistics to a `.dat` file.
 
 - [run_shared.cu](run_shared.cu): host program for launching experiments (uses `ising_shared.hpp`). Notes:
-	- Parses arguments: `./run_shared.x -L <log2_size> -T <temp> -N <nsweeps> -b <obc|pbc> [-t <tag>] [-o <output.csv>] [-s <seed>] [-v]`.
-	- Uses `updateTileKernel` with shared memory
+	- Parses arguments: `./run_shared.x -L <log2_size> -T <temp> -N <nsweeps> -b <obc|pbc|fixup|fixalt> [-t <tag>] [-o <output.csv>] [-s <seed>] [-v]`.
     - Simulation:
-        - Anneal phase of 1000 sweeps
-        - Thermalization phase checks half windows of 10000 sweeps for convergence of magnetization (stopping when the difference between the two halves is less than `0.05 * sqrt(var1 + var2)`).
-		- Measurement phase of `nsweeps` sweeps, where it collects magnetization data.
+        - Annealing phase of 10000 sweeps
+        - Thermalization phase checks variance of magnetization and energy between multiple sweeps windows.
+		- Measurement phase of `nsweeps` sweeps, where it collects magnetization and energy data.
     - Integrates datablocking algorithms for computing statistical errors. Appends a summary to `master_results.csv`
+
+- [run_cooperative.cu](run_cooperative.cu): cooperative groups implementation of `run_shared.cu` (uses `ising_cooperative.hpp`). Only the measurement phase uses the cooperative kernel, while annealing and thermalization are performed with the shared-memory kernel.
 
 - [run_hotstart.cu](run_hotstart.cu): host program for launching experiments without annealing or convergence checks:
 	- Performs a long thermalization.
