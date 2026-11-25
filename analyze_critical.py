@@ -70,7 +70,61 @@ TC_EXACT = 2.0 / np.log(1.0 + np.sqrt(2.0))   # ≈ 2.26919  (Onsager)
 # I/O
 # ===========================================================================
 
-def load(path: str | Path, drop_unthermalized: bool = False) -> pd.DataFrame:
+def detect_outliers(df: pd.DataFrame) -> pd.Series:
+    """Flag isolated trapped / non-equilibrated low-T runs.
+
+    Below Tc, large lattices (L >= 512) initialized randomly can remain
+    trapped in metastable domains during part of a measurement run, causing a
+    sharp isolated spike in susceptibility and a corresponding dip in M_abs/U4
+    relative to neighboring temperatures at the same L.
+
+    Returns a boolean Series aligned with ``df.index`` (True = suspect outlier).
+    """
+    if df.empty:
+        return pd.Series(False, index=df.index)
+
+    N = (df["L"] ** 2).astype(float).values
+    T = df["T"].values
+    M_abs = df["M_abs"].values
+    M2 = df["M2"].values
+    M4 = df["M4"].values
+
+    chi = _chi(M2, M_abs, N, T)
+    u4 = _binder(M4, M2)
+
+    flagged = pd.Series(False, index=df.index)
+    work = pd.DataFrame({
+        "T": T,
+        "m": M_abs / N,
+        "chi": chi,
+        "u4": u4,
+    }, index=df.index)
+
+    for _, grp in work.groupby(df["L"]):
+        grp_s = grp.sort_values("T")
+        if len(grp_s) < 5:
+            continue
+        chi_med = grp_s["chi"].rolling(window=5, center=True, min_periods=3).median()
+        u4_med = grp_s["u4"].rolling(window=5, center=True, min_periods=3).median()
+        m_med = grp_s["m"].rolling(window=5, center=True, min_periods=3).median()
+
+        # Catch severe negative Binder spikes or >5x isolated susceptibility spikes
+        # accompanied by a drop in order parameter / Binder cumulant.
+        is_neg_u4 = grp_s["u4"] < -0.05
+        is_chi_spike = (
+            (grp_s["chi"] > 5.0 * np.maximum(chi_med, 1.0))
+            & ((grp_s["u4"] < u4_med - 1e-4) | (grp_s["m"] < m_med - 0.01))
+        )
+        flagged.loc[grp_s.index] = (is_neg_u4 | is_chi_spike).values
+
+    return flagged
+
+
+def load(
+    path: str | Path,
+    drop_unthermalized: bool = False,
+    drop_outliers: bool = False,
+) -> pd.DataFrame:
     """Load and lightly validate the master CSV produced by run_shared.x.
 
     Parameters
@@ -81,6 +135,10 @@ def load(path: str | Path, drop_unthermalized: bool = False) -> pd.DataFrame:
         If True, rows with ``is_thermalized == 0`` are discarded.
         Defaults to False because near Tc critical slowing down causes
         the conservative thermalization test to produce false negatives.
+    drop_outliers:
+        If True, isolated metastable / trapped low-T runs flagged by
+        :func:`detect_outliers` are discarded. Defaults to False (retains
+        all rows and prints a notice when anomalies are detected).
 
     Returns
     -------
@@ -115,6 +173,26 @@ def load(path: str | Path, drop_unthermalized: bool = False) -> pd.DataFrame:
 
     df["N"] = df["L"] ** 2          # number of spins
     df["T"] = df["T"].round(6)      # normalise floating-point T labels
+
+    outliers = detect_outliers(df)
+    if outliers.any():
+        desc = ", ".join(
+            f"(L={int(r['L'])}, T={r['T']:.4f})"
+            for _, r in df.loc[outliers, ["L", "T"]].head(6).iterrows()
+        )
+        suffix = ", ..." if outliers.sum() > 6 else ""
+        if drop_outliers:
+            warnings.warn(
+                f"Dropping {outliers.sum()} / {len(df)} suspect trapped-run outlier(s): {desc}{suffix}",
+                stacklevel=2,
+            )
+            df = df[~outliers].copy()
+        else:
+            print(
+                f"  Note: {outliers.sum()} suspect trapped-run outlier(s) detected ({desc}{suffix}); "
+                "retained (pass drop_outliers=True / --drop-outliers to filter)."
+            )
+
     return df.reset_index(drop=True)
 
 
@@ -162,9 +240,8 @@ def _cv_err(
 
 def _binder(M4: np.ndarray, M2: np.ndarray) -> np.ndarray:
     """U₄ = 1 − ⟨m⁴⟩ / (3 ⟨m²⟩²)   (dimensionless, N-independent)."""
-    m4 = M4 / M2**0   # raw extensive moments cancel N: use M4/M2² = (M4/N⁴)/(M2/N²)²
-    # But the raw CSV gives extensive M2, M4 (sum over lattice),
-    # so the ratio M4/M2² already normalises correctly.
+    # Raw CSV gives extensive M2, M4 (sum over lattice); the ratio M4/M2²
+    # cancels N automatically: (M4/N⁴)/(M2/N²)² = M4/M2².
     with np.errstate(divide="ignore", invalid="ignore"):
         ratio = np.where(M2 != 0, M4 / (3.0 * M2**2), np.nan)
     return 1.0 - ratio
@@ -174,7 +251,12 @@ def _binder_err(
     M4: np.ndarray, err_M4: np.ndarray,
     M2: np.ndarray, err_M2: np.ndarray,
 ) -> np.ndarray:
-    """Propagated statistical error on U₄."""
+    """Propagated statistical error on U₄ (upper bound ignoring Cov(M4, M2)).
+
+    Note: The summary CSV does not store Cov(M4, M2), which is strongly
+    positive and cancels much of the variance in M4 / M2². As a result, this
+    uncorrelated linear propagation overestimates single-point err_binder.
+    """
     with np.errstate(divide="ignore", invalid="ignore"):
         dU_dM4 = -1.0 / (3.0 * M2**2)
         dU_dM2 = 2.0 * M4 / (3.0 * M2**3)
@@ -307,65 +389,245 @@ def peak_temperature(
     return pd.DataFrame(rows)
 
 
-def binder_crossing(df_agg: pd.DataFrame) -> dict:
-    """Estimate Tc from pairwise crossings of the Binder cumulant curves.
+def _median3(vals: np.ndarray) -> np.ndarray:
+    """Apply a 3-point running median (leaving endpoints unchanged)."""
+    if len(vals) < 3:
+        return vals.copy()
+    out = vals.copy()
+    for i in range(1, len(vals) - 1):
+        out[i] = float(np.median(vals[i - 1 : i + 2]))
+    return out
 
-    Uses pairwise linear interpolation on the union of sample points
-    in the overlapping temperature range between adjacent (L1, L2) pairs.
+
+def _find_crossing_candidates(
+    T_common: np.ndarray,
+    b1: np.ndarray,
+    b2: np.ndarray,
+    u_min: float,
+    u_max: float,
+    require_upward: bool = True,
+) -> list[tuple[float, float, float, int]]:
+    """Find linear-interpolation crossings of ``b1 - b2`` inside ``[u_min, u_max]``.
+
+    Returns list of ``(T_root, U_root, |d(b1-b2)/dT|, interval_idx)``.
+    When ``require_upward=True``, keeps only crossings where ``b1 - b2`` goes
+    from negative to positive (larger lattice L2 transitions from more ordered
+    below Tc to less ordered above Tc).
+    """
+    diff = b1 - b2
+    cands: list[tuple[float, float, float, int]] = []
+    for k in range(len(diff) - 1):
+        d1, d2 = float(diff[k]), float(diff[k + 1])
+        if require_upward:
+            is_cross = (d1 <= 0.0 < d2)
+        else:
+            is_cross = (d1 <= 0.0 < d2) or (d1 >= 0.0 > d2)
+        if not is_cross or d2 == d1:
+            continue
+
+        T1, T2 = float(T_common[k]), float(T_common[k + 1])
+        T_root = T1 - d1 * (T2 - T1) / (d2 - d1)
+        w = (T_root - T1) / (T2 - T1)
+        U_root = float(b1[k] * (1.0 - w) + b1[k + 1] * w)
+        slope = abs((d2 - d1) / (T2 - T1))
+        if u_min <= U_root <= u_max:
+            cands.append((float(T_root), U_root, slope, k))
+    return cands
+
+
+def _fit_local_binder_curve(
+    ts: np.ndarray,
+    u4s: np.ndarray,
+    errs: np.ndarray,
+    t0: float,
+    l2: int,
+) -> tuple[np.ndarray, np.ndarray, float, float, float] | None:
+    """Fit a local quadratic (or linear if <5 pts) polynomial to U4(T) near t0."""
+    if len(ts) < 2:
+        return None
+    idx = int(np.argmin(np.abs(ts - t0)))
+    dt_lo = ts[idx] - ts[max(0, idx - 1)]
+    dt_hi = ts[min(len(ts) - 1, idx + 1)] - ts[idx]
+    dt = max(float(dt_lo), float(dt_hi), 1e-4)
+
+    # Adaptive window scales inversely with L2 so we stay inside the smooth core
+    # of the critical drop without curving into the saturation plateaus.
+    hw = min(0.005, max(2.2 * dt, 2.5 / float(l2)))
+    mask = np.abs(ts - t0) <= hw + 1e-9
+
+    if int(mask.sum()) >= 5:
+        ts_win, u4_win, er_win = ts[mask], u4s[mask], errs[mask]
+    else:
+        n_target = min(5, len(ts))
+        lo = max(0, idx - n_target // 2)
+        hi = lo + n_target
+        if hi > len(ts):
+            hi = len(ts)
+            lo = max(0, hi - n_target)
+        ts_win, u4_win, er_win = ts[lo:hi], u4s[lo:hi], errs[lo:hi]
+
+    if len(ts_win) < 2:
+        return None
+
+    xs = ts_win - t0
+    deg = 2 if len(xs) >= 5 else 1
+    X = np.column_stack([xs ** p for p in range(deg + 1)])
+    coeffs_raw, _, _, _ = np.linalg.lstsq(X, u4_win, rcond=None)
+    inv_raw = np.linalg.pinv(X.T @ X)
+
+    coeffs = np.zeros(3, dtype=float)
+    coeffs[: deg + 1] = coeffs_raw
+    inv3 = np.zeros((3, 3), dtype=float)
+    inv3[: deg + 1, : deg + 1] = inv_raw
+
+    resid = u4_win - (X @ coeffs_raw)
+    dof = len(xs) - (deg + 1)
+    s2_emp = float(np.sum(resid ** 2) / dof) if dof >= 1 else 0.0
+    valid_e = er_win[np.isfinite(er_win) & (er_win > 0)]
+    s2_rep = float(np.mean(valid_e) ** 2) if len(valid_e) > 0 else 0.0
+    # Prefer empirical residual variance (dof >= 2) because uncorrelated CSV
+    # error propagation omits Cov(M4, M2); fall back to reported error otherwise.
+    s2_eff = s2_emp if (dof >= 2 and s2_emp > 0.0) else (s2_rep if s2_rep > 0.0 else s2_emp)
+    return coeffs, inv3, s2_eff, float(ts_win.min()), float(ts_win.max())
+
+
+def _solve_local_crossing(
+    fit1: tuple[np.ndarray, np.ndarray, float, float, float],
+    fit2: tuple[np.ndarray, np.ndarray, float, float, float],
+    t0: float,
+) -> tuple[float, float, float] | None:
+    """Solve c1(dx) == c2(dx) and propagate uncertainty on T_cross."""
+    c1, inv1, s2_1, tmin1, tmax1 = fit1
+    c2, inv2, s2_2, tmin2, tmax2 = fit2
+    da = float(c1[0] - c2[0])
+    db = float(c1[1] - c2[1])
+    dc = float(c1[2] - c2[2])
+
+    if abs(dc) < 1e-12:
+        if abs(db) < 1e-12:
+            return None
+        dx = -da / db
+    else:
+        disc = db * db - 4.0 * dc * da
+        if disc < 0.0:
+            return None
+        sq = float(np.sqrt(disc))
+        r1 = (-db + sq) / (2.0 * dc)
+        r2 = (-db - sq) / (2.0 * dc)
+        dx = r1 if abs(r1) <= abs(r2) else r2
+
+    t_cross = float(t0 + dx)
+    lo_b = max(tmin1, tmin2)
+    hi_b = min(tmax1, tmax2)
+    if not (lo_b - 1e-9 <= t_cross <= hi_b + 1e-9):
+        return None
+
+    slope_diff = db + 2.0 * dc * dx
+    if slope_diff <= 0.0:
+        return None
+
+    u_cross = float(c1[0] + c1[1] * dx + c1[2] * dx * dx)
+    v = np.array([1.0, dx, dx * dx], dtype=float)
+    g1 = float(v @ inv1 @ v)
+    g2 = float(v @ inv2 @ v)
+    t_err = float(np.sqrt(max(0.0, s2_1 * g1 + s2_2 * g2)) / slope_diff)
+    return t_cross, t_err, u_cross
+
+
+def binder_crossing_details(
+    df_agg: pd.DataFrame,
+    u_min: float = 0.08,
+    u_max: float = 0.662,
+) -> dict[tuple[int, int], dict[str, float]]:
+    """Estimate pairwise Binder cumulant crossings with uncertainties.
+
+    Locates the physical transition crossing on 3-point median-filtered curves
+    within ``u_min <= U4 <= u_max`` (excluding both the high-T disordered noise
+    plateau U4 ≈ 0 and the low-T ferromagnetic ceiling U4 ≈ 2/3, while staying
+    compatible with PBC, OBC, and symmetry-broken boundary conditions), then
+    refines ``T_cross`` and ``T_err`` using adaptive local quadratic fits.
 
     Returns
     -------
-    dict mapping ``(L1, L2)`` to estimated ``T_cross``.
+    dict mapping ``(L1, L2)`` to ``{"T_cross", "T_err", "U_cross", "n_candidates"}``.
     """
-    Ls = sorted(df_agg["L"].unique())
-    crossings: dict[tuple, float] = {}
+    Ls = sorted(int(L) for L in df_agg["L"].unique())
+    details: dict[tuple[int, int], dict[str, float]] = {}
+
     for i in range(len(Ls) - 1):
         L1, L2 = Ls[i], Ls[i + 1]
         g1 = df_agg[df_agg["L"] == L1].sort_values("T")
         g2 = df_agg[df_agg["L"] == L2].sort_values("T")
-        t1, b1_raw = g1["T"].values, g1["binder"].values
-        t2, b2_raw = g2["T"].values, g2["binder"].values
+        t1, b1_raw = g1["T"].values.astype(float), g1["binder"].values.astype(float)
+        t2, b2_raw = g2["T"].values.astype(float), g2["binder"].values.astype(float)
+        e1_raw = g1["err_binder"].values.astype(float) if "err_binder" in g1 else np.full_like(b1_raw, np.nan)
+        e2_raw = g2["err_binder"].values.astype(float) if "err_binder" in g2 else np.full_like(b2_raw, np.nan)
 
         T_min = max(t1.min(), t2.min())
         T_max = min(t1.max(), t2.max())
         if T_max <= T_min:
             continue
 
-        # Common evaluation grid: union of points in the overlapping window
         T_common = np.unique(np.concatenate([
             t1[(t1 >= T_min) & (t1 <= T_max)],
-            t2[(t2 >= T_min) & (t2 <= T_max)]
+            t2[(t2 >= T_min) & (t2 <= T_max)],
         ]))
         if len(T_common) < 2:
             continue
 
-        b1 = np.interp(T_common, t1, b1_raw)
-        b2 = np.interp(T_common, t2, b2_raw)
-        diff = b1 - b2
+        b1_med = np.interp(T_common, t1, _median3(b1_raw))
+        b2_med = np.interp(T_common, t2, _median3(b2_raw))
 
-        # Find sign changes
-        sign_changes = np.where(np.diff(np.sign(diff)))[0]
-        if len(sign_changes) == 0:
+        cands = _find_crossing_candidates(T_common, b1_med, b2_med, u_min, u_max, require_upward=True)
+        if not cands:
+            cands = _find_crossing_candidates(T_common, b1_med, b2_med, 0.04, 0.665, require_upward=False)
+        if not cands:
+            b1_lin = np.interp(T_common, t1, b1_raw)
+            b2_lin = np.interp(T_common, t2, b2_raw)
+            cands = _find_crossing_candidates(T_common, b1_lin, b2_lin, 0.04, 0.665, require_upward=False)
+        if not cands:
             continue
 
-        roots = []
-        for k in sign_changes:
-            T1, T2 = T_common[k], T_common[k + 1]
-            d1, d2 = diff[k], diff[k + 1]
-            if d2 != d1:
-                T_root = T1 - d1 * (T2 - T1) / (d2 - d1)
-                b_root = float(0.5 * (b1[k] + b2[k]))
-                roots.append((T_root, b_root))
+        # Most decisive crossing (largest differential slope in transition band)
+        T0, U0, slope0, k0 = max(cands, key=lambda c: c[2])
 
-        if roots:
-            # In the ferromagnetic phase (T << Tc), U4 -> 2/3 (0.6667) for all sizes.
-            # Trivial noise crossings in this flat saturation plateau (b_root > 0.65)
-            # must be excluded in favor of the physical critical crossing (U* ≈ 0.61).
-            crit_roots = [T_r for (T_r, b_r) in roots if b_r < 0.65]
-            if not crit_roots:
-                crit_roots = [min(roots, key=lambda x: abs(x[1] - 0.61069))[0]]
-            crossings[(L1, L2)] = float(np.mean(crit_roots))
-    return crossings
+        fit1 = _fit_local_binder_curve(t1, b1_raw, e1_raw, T0, L2)
+        fit2 = _fit_local_binder_curve(t2, b2_raw, e2_raw, T0, L2)
+        solved = _solve_local_crossing(fit1, fit2, T0) if (fit1 is not None and fit2 is not None) else None
+
+        if solved is not None:
+            T_cross, T_err, U_cross = solved
+        else:
+            T_cross, U_cross = T0, U0
+            e1_c = float(np.interp(T0, t1, e1_raw)) if np.all(np.isfinite(e1_raw)) else np.nan
+            e2_c = float(np.interp(T0, t2, e2_raw)) if np.all(np.isfinite(e2_raw)) else np.nan
+            T_err = float(np.hypot(e1_c, e2_c) / slope0) if (slope0 > 0 and np.isfinite(e1_c) and np.isfinite(e2_c)) else np.nan
+
+        details[(L1, L2)] = {
+            "T_cross": float(T_cross),
+            "T_err": float(T_err),
+            "U_cross": float(U_cross),
+            "n_candidates": float(len(cands)),
+        }
+
+    return details
+
+
+def binder_crossing(
+    df_agg: pd.DataFrame,
+    u_min: float = 0.08,
+    u_max: float = 0.662,
+) -> dict[tuple[int, int], float]:
+    """Estimate Tc from pairwise crossings of the Binder cumulant curves.
+
+    Returns
+    -------
+    dict mapping ``(L1, L2)`` to estimated ``T_cross``.
+    """
+    return {
+        pair: info["T_cross"]
+        for pair, info in binder_crossing_details(df_agg, u_min=u_min, u_max=u_max).items()
+    }
 
 
 # ===========================================================================
@@ -434,6 +696,7 @@ def extrapolate_tc(
     fix_nu: bool = True,
     min_sizes: int = 3,
     refine_peaks: bool = True,
+    binder_omega: float = 1.0,
 ) -> dict[str, ExtrapResult]:
     """Extrapolate the critical temperature Tc using three independent methods.
 
@@ -447,12 +710,11 @@ def extrapolate_tc(
         Same FSS ansatz applied to the specific-heat peak positions.
 
     **Method 3 — Binder crossing average** (``"binder"``)
-        Collects all pairwise Binder-cumulant crossing temperatures and
-        performs a weighted average, with weights $w \\propto (L_1 L_2)$
-        (larger pairs are closer to the thermodynamic limit).
-        Also fits a residual-drift model
-        $T_{\\rm cross}(L_1,L_2) = T_c + b \\cdot (L_1 L_2)^{-1/\\nu}$
-        when enough crossing points exist.
+        Collects pairwise Binder-cumulant crossing temperatures and errors via
+        :func:`binder_crossing_details`, forms an inverse-variance weighted mean,
+        and fits the finite-size crossing drift model
+        $T_{\\rm cross}(L_1,L_2) = T_c + b \\cdot (L_1 L_2)^{-(1/\\nu + \\omega)/2}$
+        (default $\\nu=1, \\omega=1 \\Rightarrow L_{\\rm geom}^{-2}$) when $\\ge 3$ crossings exist.
 
     **Combined estimate** (``"combined"``)
         Inverse-variance weighted mean of the three Tc values above.
@@ -463,11 +725,15 @@ def extrapolate_tc(
         Aggregated observable DataFrame from :func:`compute_observables`.
     fix_nu:
         If True (default), fix the correlation-length exponent ν = 1
-        (exact 2D Ising value). Set False to fit ν as a free parameter
-        (needs ≥ 4 sizes for reliable convergence).
+        (exact 2D Ising value). Set False to fit ν / drift exponent freely
+        (needs ≥ 4 sizes/crossings for reliable convergence).
     min_sizes:
         Minimum number of distinct lattice sizes required to attempt a fit.
         Methods with fewer data points fall back to a linear 1/L estimate.
+    binder_omega:
+        Correction-to-scaling exponent ω used in the Binder crossing drift
+        exponent ``1/nu + binder_omega`` (default 1.0 → L^{-2}; use 2.0 for
+        leading bulk 2D Ising PBC corrections L^{-3}).
 
     Returns
     -------
@@ -564,81 +830,123 @@ def extrapolate_tc(
     # ------------------------------------------------------------------
     # Method 3: Binder crossing
     # ------------------------------------------------------------------
-    crossings = binder_crossing(df_agg)
-    if not crossings:
+    cross_details = binder_crossing_details(df_agg)
+    if not cross_details:
         results["binder"] = ExtrapResult(
             "Binder crossing",
             TC_EXACT, np.nan,
             meta={"warning": "no crossings found"},
         )
     else:
-        cross_vals = np.array(list(crossings.values()))
-        cross_keys = list(crossings.keys())
+        cross_keys = list(cross_details.keys())
+        cross_vals = np.array([cross_details[k]["T_cross"] for k in cross_keys], dtype=float)
+        cross_errs = np.array([cross_details[k]["T_err"] for k in cross_keys], dtype=float)
+        cross_u    = np.array([cross_details[k]["U_cross"] for k in cross_keys], dtype=float)
 
-        # Weight ∝ L1*L2 (larger pairs converge faster to Tc)
-        weights = np.array([L1 * L2 for (L1, L2) in cross_keys], dtype=float)
-        weights /= weights.sum()
+        use_sigma = bool(np.all(np.isfinite(cross_errs)) and np.all(cross_errs > 0))
+        if use_sigma:
+            raw_w = 1.0 / (cross_errs ** 2)
+            weights = raw_w / raw_w.sum()
+            Tc_wmean = float(np.dot(weights, cross_vals))
+            chi2_w = float(np.sum(raw_w * (cross_vals - Tc_wmean) ** 2))
+            chi2_w_red = chi2_w / max(1, len(cross_vals) - 1) if len(cross_vals) > 1 else 1.0
+            Tc_err = float(np.sqrt(1.0 / raw_w.sum()) * max(1.0, np.sqrt(chi2_w_red)))
+        else:
+            raw_w = np.array([L1 * L2 for (L1, L2) in cross_keys], dtype=float)
+            weights = raw_w / raw_w.sum()
+            Tc_wmean = float(np.dot(weights, cross_vals))
+            Tc_wstd = float(np.sqrt(np.dot(weights, (cross_vals - Tc_wmean) ** 2)))
+            Tc_err = Tc_wstd if len(cross_vals) > 1 else np.nan
 
-        Tc_wmean = float(np.dot(weights, cross_vals))
-        # Weighted standard deviation as uncertainty proxy
-        Tc_wstd  = float(np.sqrt(np.dot(weights, (cross_vals - Tc_wmean) ** 2)))
-        Tc_err   = Tc_wstd if len(cross_vals) > 1 else np.nan
-
-        params = {f"T_cross(L={L1},{L2})": float(v)
-                  for (L1, L2), v in crossings.items()}
+        params: dict = {}
+        for (L1, L2), v, e, u in zip(cross_keys, cross_vals, cross_errs, cross_u):
+            err_str = f" ± {e:.5f}" if np.isfinite(e) else ""
+            params[f"T_cross(L={L1},{L2})"] = f"{v:.6f}{err_str}  (U*={u:.4f})"
+        params["U_cross_mean"] = float(np.mean(cross_u))
         params["weights"] = {f"({L1},{L2})": float(w)
                              for (L1, L2), w in zip(cross_keys, weights)}
 
-        # Optional: fit drift T_cross ~ Tc + b*(L1*L2)^{-1/nu}
+        # Fit finite-size crossing drift:
+        #   T_cross(L1, L2) = Tc + b * L_geom^{-(1/nu + omega)}
         drift_meta: dict = {}
-        if HAS_SCIPY and len(crossings) >= 3:
-            geom_L = np.array([np.sqrt(L1 * L2) for (L1, L2) in cross_keys])
-            try:
-                if fix_nu:
-                    def _cross_model(x, Tc, b):
-                        return Tc + b * x ** (-1.0)
-                    pc, pcc = curve_fit(
-                        _cross_model, geom_L, cross_vals,
-                        p0=[TC_EXACT, 1.0], maxfev=5000,
-                    )
-                    Tc_fit, b_fit = pc
-                    Tc_fit_err = float(np.sqrt(pcc[0, 0]))
+        Tc_out = Tc_wmean
+        Tc_out_err = Tc_err
+        if len(cross_keys) >= 3:
+            geom_L = np.array([np.sqrt(L1 * L2) for (L1, L2) in cross_keys], dtype=float)
+            drift_power = 1.0 + float(binder_omega)
+            fitted_free = False
+
+            if not fix_nu and HAS_SCIPY and len(cross_keys) >= 4:
+                try:
+                    def _cross_model_free(x, Tc, b, p_exp):
+                        return Tc + b * x ** (-p_exp)
+                    cf_kwargs = {
+                        "p0": [TC_EXACT, 1.0, drift_power],
+                        "maxfev": 5000,
+                        "bounds": ([TC_EXACT - 0.5, -1e4, 1.0], [TC_EXACT + 0.5, 1e4, 5.0]),
+                    }
+                    if use_sigma:
+                        cf_kwargs["sigma"] = cross_errs
+                        cf_kwargs["absolute_sigma"] = True
+                    pc, pcc = curve_fit(_cross_model_free, geom_L, cross_vals, **cf_kwargs)
+                    Tc_fit, b_fit, p_fit = [float(val) for val in pc]
+                    resid = cross_vals - _cross_model_free(geom_L, Tc_fit, b_fit, p_fit)
+                    dof = max(1, len(cross_keys) - 3)
+                    chi2_red = float(np.sum((resid / cross_errs) ** 2) / dof) if use_sigma else float(np.sum(resid ** 2) / dof)
+                    scale = max(1.0, float(np.sqrt(chi2_red))) if use_sigma else 1.0
+                    Tc_fit_err = float(np.sqrt(pcc[0, 0]) * scale)
                     drift_meta = {
+                        "drift_Tc": Tc_fit,
+                        "drift_Tc_err": Tc_fit_err,
+                        "drift_b": b_fit,
+                        "drift_power": p_fit,
+                        "drift_chi2_red": chi2_red,
+                    }
+                    if np.isfinite(Tc_fit_err) and Tc_fit_err > 0:
+                        Tc_out = Tc_fit
+                        Tc_out_err = Tc_fit_err
+                        fitted_free = True
+                except RuntimeError:
+                    drift_meta = {"drift_warning": "free-exponent drift fit did not converge"}
+
+            if not fitted_free:
+                # Exact weighted linear least squares in x = L_geom^{-drift_power}
+                x = geom_L ** (-drift_power)
+                w_fit = (1.0 / (cross_errs ** 2)) if use_sigma else np.ones_like(cross_vals)
+                S = float(w_fit.sum())
+                Sx = float(np.dot(w_fit, x))
+                Sy = float(np.dot(w_fit, cross_vals))
+                Sxx = float(np.dot(w_fit, x * x))
+                Sxy = float(np.dot(w_fit, x * cross_vals))
+                det = S * Sxx - Sx * Sx
+                if det > 0:
+                    Tc_fit = (Sxx * Sy - Sx * Sxy) / det
+                    b_fit = (S * Sxy - Sx * Sy) / det
+                    resid = cross_vals - (Tc_fit + b_fit * x)
+                    dof = max(1, len(cross_keys) - 2)
+                    chi2_red = float(np.sum(w_fit * (resid ** 2)) / dof)
+                    if use_sigma:
+                        Tc_fit_err = float(np.sqrt(Sxx / det) * max(1.0, np.sqrt(chi2_red)))
+                    else:
+                        Tc_fit_err = float(np.sqrt(chi2_red * Sxx / det))
+                    drift_meta.update({
                         "drift_Tc": float(Tc_fit),
                         "drift_Tc_err": Tc_fit_err,
                         "drift_b": float(b_fit),
-                        "drift_nu_fixed": 1.0,
-                    }
-                    # Prefer the drift fit if it converged well
-                    if np.isfinite(Tc_fit_err) and Tc_fit_err < Tc_err or np.isnan(Tc_err):
-                        Tc_wmean = float(Tc_fit)
-                        Tc_err   = Tc_fit_err
-                else:
-                    def _cross_model_free(x, Tc, b, inv_nu):  # type: ignore[misc]
-                        return Tc + b * x ** (-inv_nu)
-                    pc, pcc = curve_fit(
-                        _cross_model_free, geom_L, cross_vals,
-                        p0=[TC_EXACT, 1.0, 1.0], maxfev=5000,
-                    )
-                    Tc_fit, b_fit, inv_nu_fit = pc
-                    Tc_fit_err = float(np.sqrt(pcc[0, 0]))
-                    drift_meta = {
-                        "drift_Tc": float(Tc_fit),
-                        "drift_Tc_err": Tc_fit_err,
-                        "drift_b": float(b_fit),
-                        "drift_nu": float(1.0 / inv_nu_fit) if inv_nu_fit != 0 else np.nan,
-                    }
-                    if np.isfinite(Tc_fit_err) and (np.isnan(Tc_err) or Tc_fit_err < Tc_err):
-                        Tc_wmean = float(Tc_fit)
-                        Tc_err   = Tc_fit_err
-            except RuntimeError:
-                drift_meta = {"drift_warning": "drift fit did not converge"}
+                        "drift_power_fixed": drift_power,
+                        "drift_chi2_red": chi2_red,
+                        "wmean_Tc": Tc_wmean,
+                        "wmean_Tc_err": Tc_err,
+                    })
+                    if np.isfinite(Tc_fit_err) and Tc_fit_err > 0:
+                        Tc_out = float(Tc_fit)
+                        Tc_out_err = Tc_fit_err
 
         results["binder"] = ExtrapResult(
-            "Binder crossing (weighted mean + drift fit)",
-            Tc_wmean, Tc_err,
+            "Binder crossing (inv-var + drift fit)",
+            Tc_out, Tc_out_err,
             params=params,
-            meta={"n_crossings": len(crossings), **drift_meta},
+            meta={"n_crossings": len(cross_keys), **drift_meta},
         )
 
     # ------------------------------------------------------------------
@@ -859,11 +1167,12 @@ def plot_extrapolation(
     ax.set_ylabel("$T_c$")
     ax.set_title(title)
 
-    # Y-axis window: zoom in around Tc
+    # Y-axis window: zoom in around Tc while ensuring all bars/errorbars fit
     all_vals = [v for v in Tcs if np.isfinite(v)]
-    all_errs = [e for e in errs if np.isfinite(e)]
+    all_errs = [e if np.isfinite(e) else 0.0 for e in errs]
     if all_vals:
-        margin = max(0.01, max(all_errs, default=0.01) * 3)
+        max_dev = max(abs(v - TC_EXACT) + e for v, e in zip(Tcs, all_errs) if np.isfinite(v))
+        margin = max(0.01, max(all_errs, default=0.01) * 3, max_dev * 1.25)
         yc = TC_EXACT
         ax.set_ylim(yc - margin, yc + margin)
 
@@ -928,11 +1237,13 @@ def print_summary(df_agg: pd.DataFrame, extrap: dict | None = None, refine_peaks
         for _, row in peaks.iterrows():
             print(f"    {int(row['L']):6d}  {row['T_peak']:10.5f}  {row['peak_value']:14.4f}")
 
-    crossings = binder_crossing(df_agg)
+    cross_details = binder_crossing_details(df_agg)
     print("\n  Binder cumulant crossings (estimated Tc):")
-    if crossings:
-        for (L1, L2), T_cross in crossings.items():
-            print(f"    L={L1:4d} × L={L2:4d}  →  Tc ≈ {T_cross:.5f}")
+    if cross_details:
+        for (L1, L2), info in cross_details.items():
+            err = info["T_err"]
+            err_str = f" ± {err:.5f}" if np.isfinite(err) else ""
+            print(f"    L={L1:4d} × L={L2:4d}  →  Tc ≈ {info['T_cross']:.5f}{err_str}  (U*={info['U_cross']:.4f})")
     else:
         print("    (not enough overlapping T values to find crossings)")
 
@@ -973,6 +1284,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Include rows where is_thermalized == 0 (default behavior, kept for compatibility)",
     )
     p.add_argument(
+        "--drop-outliers", action="store_true",
+        help="Discard isolated trapped / non-equilibrated low-T outliers flagged by detect_outliers",
+    )
+    p.add_argument(
         "--no-refine-peaks", action="store_true",
         help="Disable sub-grid parabolic peak refinement and use discrete maximum",
     )
@@ -994,7 +1309,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--free-nu", action="store_true",
-        help="Fit ν as a free parameter instead of fixing ν=1 (needs ≥4 sizes)",
+        help="Fit ν / Binder drift exponent freely (needs ≥4 sizes/crossings)",
+    )
+    p.add_argument(
+        "--binder-omega", type=float, default=1.0,
+        help="Correction-to-scaling exponent ω in Binder crossing drift L^{-(1/ν+ω)} [default: 1.0]",
     )
     return p
 
@@ -1003,7 +1322,11 @@ def main(argv=None):
     args = _build_parser().parse_args(argv)
 
     print(f"Loading {args.csv} …")
-    df_raw = load(args.csv, drop_unthermalized=args.drop_unthermalized)
+    df_raw = load(
+        args.csv,
+        drop_unthermalized=args.drop_unthermalized,
+        drop_outliers=args.drop_outliers,
+    )
     print(f"  {len(df_raw)} rows loaded  "
           f"({df_raw['L'].nunique()} sizes, {df_raw['T'].nunique()} temperatures, "
           f"{df_raw['run_tag'].nunique()} tags)")
@@ -1014,7 +1337,12 @@ def main(argv=None):
     refine_peaks = not args.no_refine_peaks
 
     print("Extrapolating Tc …")
-    extrap = extrapolate_tc(df_agg, fix_nu=not args.free_nu, refine_peaks=refine_peaks)
+    extrap = extrapolate_tc(
+        df_agg,
+        fix_nu=not args.free_nu,
+        refine_peaks=refine_peaks,
+        binder_omega=args.binder_omega,
+    )
 
     print_summary(df_agg, extrap=extrap, refine_peaks=refine_peaks)
 
